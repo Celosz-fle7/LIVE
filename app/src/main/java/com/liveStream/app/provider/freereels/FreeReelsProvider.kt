@@ -97,6 +97,14 @@ class FreeReelsProvider : DramaProvider {
         )
     }
 
+    override suspend fun getForYouFeed(cursor: String): FeedPage = withContext(Dispatchers.IO) {
+        ensureAuth()
+        val json = execGet("/foryou/feed")
+        val arr = json.optJSONObject("data")?.optJSONArray("items") ?: JSONArray()
+        val items = parseDramaArray(arr)
+        FeedPage(items = items, nextCursor = "next", hasMore = items.isNotEmpty())
+    }
+
     override suspend fun search(query: String, cursor: String): FeedPage = withContext(Dispatchers.IO) {
         ensureAuth()
         val page = cursor.toIntOrNull()?.coerceAtLeast(1) ?: 1

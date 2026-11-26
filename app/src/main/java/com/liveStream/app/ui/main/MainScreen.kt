@@ -37,6 +37,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.FilterList
@@ -64,6 +65,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -87,12 +89,22 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem as ExoMediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import android.app.Activity
 import coil.compose.AsyncImage
 import com.liveStream.app.BuildConfig
 import com.liveStream.app.core.NativeCore
 import com.liveStream.app.core.updater.AppUpdater
 import com.liveStream.app.core.updater.UpdateInfo
+import com.liveStream.app.provider.ProviderRegistry
 import com.liveStream.app.ui.theme.AccentGold
 import com.liveStream.app.ui.theme.AccentRed
 import com.liveStream.app.ui.theme.BgDark
@@ -200,7 +212,14 @@ fun MainScreen(
                             onOpenDrawer = { scope.launch { drawerState.open() } },
                             onOpenPlayer = onOpenPlayer
                         )
-                        BottomNavTab.FOR_YOU -> ForYouPagerPage(state.items, onOpenPlayer)
+                        BottomNavTab.FOR_YOU -> ForYouPagerPage(
+                            items = state.forYouItems,
+                            favorites = state.favorites,
+                            isVisible = state.bottomTab == BottomNavTab.FOR_YOU,
+                            isLoading = state.forYouLoading,
+                            onIntent = viewModel::onIntent,
+                            onOpenPlayer = onOpenPlayer
+                        )
                         BottomNavTab.MY_LIST -> FavoritesPage(state.favorites, onOpenPlayer)
                         BottomNavTab.PROFILE -> ProfilePage(
                             state = state,
@@ -587,39 +606,177 @@ private fun PosterCard(item: MediaItem, onClick: () -> Unit) {
     }
 }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ForYouPagerPage(items: List<MediaItem>, onOpenPlayer: (MediaItem) -> Unit) {
+private fun ForYouPagerPage(
+    items: List<MediaItem>,
+    favorites: List<MediaItem>,
+    isVisible: Boolean,
+    isLoading: Boolean,
+    onIntent: (MainIntent) -> Unit,
+    onOpenPlayer: (MediaItem) -> Unit
+) {
     if (items.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Belum ada feed", color = TextSecondary)
+            if (isLoading) {
+                CircularProgressIndicator(color = AccentRed)
+            } else {
+                Text("Belum ada rekomendasi", color = TextSecondary)
+            }
         }
         return
     }
+
+    val context = LocalContext.current
     val pagerState = rememberPagerState(pageCount = { items.size })
+    val exoPlayer = remember {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+        }
+    }
+    var activePlayingKey by remember { mutableStateOf("") }
+    var isPaused by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        onDispose { exoPlayer.release() }
+    }
+
+    LaunchedEffect(isVisible) {
+        if (!isVisible) {
+            exoPlayer.playWhenReady = false
+            exoPlayer.pause()
+        } else if (activePlayingKey.isNotEmpty()) {
+            exoPlayer.playWhenReady = !isPaused
+        }
+    }
+
+    val currentItem = items.getOrNull(pagerState.currentPage)
+    LaunchedEffect(currentItem?.providerId, currentItem?.mediaId, isVisible) {
+        val item = currentItem ?: return@LaunchedEffect
+        if (!isVisible) return@LaunchedEffect
+        val key = "${item.providerId}:${item.mediaId}"
+        if (pagerState.currentPage >= items.size - 3) {
+            onIntent(MainIntent.LoadMoreForYou)
+        }
+        activePlayingKey = ""
+        isPaused = false
+        exoPlayer.stop()
+
+        val provider = ProviderRegistry.get(item.providerId)
+        val eps = runCatching { provider.getEpisodes(item.mediaId).episodes }.getOrDefault(emptyList())
+        val firstEp = eps.firstOrNull { !it.isLocked } ?: return@LaunchedEffect
+        val src = runCatching { provider.resolvePlayback(item.mediaId, firstEp.episodeId) }.getOrNull()
+            ?: return@LaunchedEffect
+        if (src.streamUrl.isNotBlank() && isVisible) {
+            val dsFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(src.headers)
+            val mediaSource = DefaultMediaSourceFactory(dsFactory)
+                .createMediaSource(ExoMediaItem.fromUri(src.streamUrl))
+            exoPlayer.setMediaSource(mediaSource)
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = true
+            activePlayingKey = key
+        }
+    }
+
     VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { idx ->
         val item = items[idx]
+        val isCurrent = idx == pagerState.currentPage && activePlayingKey == "${item.providerId}:${item.mediaId}"
+        val isSaved = favorites.any { it.providerId == item.providerId && it.mediaId == item.mediaId }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(BgDark)
-                .padding(24.dp),
-            contentAlignment = Alignment.BottomStart
-        ) {
-            Column {
-                Text(item.title, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                if (item.tags.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(item.tags.joinToString(" • "), color = TextSecondary, fontSize = 13.sp)
+                .background(Color.Black)
+                .clickable {
+                    if (isCurrent) {
+                        isPaused = !isPaused
+                        exoPlayer.playWhenReady = !isPaused
+                    }
                 }
-                Spacer(Modifier.height(14.dp))
+        ) {
+            if (item.coverUrl.isNotBlank()) {
+                AsyncImage(
+                    model = item.coverUrl,
+                    contentDescription = item.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            if (isCurrent) {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            useController = false
+                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            player = exoPlayer
+                        }
+                    },
+                    update = { it.player = exoPlayer },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            // Gradient overlay bawah
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .align(Alignment.BottomCenter)
+                    .background(
+                        Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC0A0B0F), BgDark))
+                    )
+            )
+
+            // Info judul & tombol tonton di kiri bawah
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 16.dp, end = 84.dp, bottom = 24.dp)
+            ) {
+                Text(item.title, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                if (item.tags.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(item.tags.joinToString(" • "), color = TextSecondary, fontSize = 12.sp, maxLines = 1)
+                }
+                Spacer(Modifier.height(10.dp))
                 Button(
-                    onClick = { onOpenPlayer(item) },
+                    onClick = {
+                        exoPlayer.pause()
+                        onOpenPlayer(item)
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentRed)
                 ) {
                     Icon(Icons.Rounded.PlayArrow, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
-                    Text("Tonton (${item.totalEpisodes} Ep)")
+                    Text("Tonton Lengkap (${item.totalEpisodes} Ep)")
+                }
+            }
+
+            // Aksi Koleksi & Episode di kanan bawah
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 14.dp, bottom = 28.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.clickable { onIntent(MainIntent.ToggleFavorite(item)) }
+                ) {
+                    Icon(
+                        imageVector = if (isSaved) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
+                        contentDescription = "Koleksi",
+                        tint = if (isSaved) AccentGold else Color.White,
+                        modifier = Modifier.size(30.dp)
+                    )
+                    Text(
+                        text = if (isSaved) "Tersimpan" else "Koleksi",
+                        color = Color.White,
+                        fontSize = 11.sp
+                    )
                 }
             }
         }

@@ -68,6 +68,8 @@ class PineDramaProvider : DramaProvider {
         parseCollectionPage(json)
     }
 
+    override suspend fun getForYouFeed(cursor: String): FeedPage = getFeed(tabId = "5", cursor = cursor)
+
     override suspend fun getFilterLadders(): List<FilterLadder> = withContext(Dispatchers.IO) {
         if (cachedLadders.isNotEmpty()) return@withContext cachedLadders
         val url = buildUrl("/tiktok/md/mini_drama/category_filter/v1/")
@@ -114,6 +116,8 @@ class PineDramaProvider : DramaProvider {
         val json = JSONObject(execGetText(url))
         parseCollectionPage(json)
     }
+
+    override suspend fun getForYouFeed(cursor: String): FeedPage = getFeed(tabId = "5", cursor = cursor)
 
     override suspend fun getEpisodes(mediaId: String, cursor: String): EpisodePage = withContext(Dispatchers.IO) {
         val total = totalEpisodeCache[mediaId] ?: 60

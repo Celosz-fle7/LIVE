@@ -43,6 +43,10 @@ data class MainUiState(
     val filterLadders: List<FilterLadder> = emptyList(),
     val selectedFilters: Map<String, FilterSelection> = emptyMap(),
     val showFilterSheet: Boolean = false,
+    val forYouItems: List<MediaItem> = emptyList(),
+    val forYouCursor: String = "",
+    val forYouHasMore: Boolean = false,
+    val forYouLoading: Boolean = false,
     val favorites: List<MediaItem> = emptyList(),
     val errorMessage: String? = null
 )
@@ -55,6 +59,7 @@ sealed interface MainIntent {
     data object SubmitSearch : MainIntent
     data object Refresh : MainIntent
     data object LoadNextPage : MainIntent
+    data object LoadMoreForYou : MainIntent
     data class ToggleFilterSheet(val show: Boolean) : MainIntent
     data class SelectFilterOption(val selection: FilterSelection) : MainIntent
     data object ApplyFilters : MainIntent
@@ -78,7 +83,12 @@ class MainViewModel : ViewModel() {
 
     fun onIntent(intent: MainIntent) {
         when (intent) {
-            is MainIntent.SelectBottomTab -> _uiState.update { it.copy(bottomTab = intent.tab) }
+            is MainIntent.SelectBottomTab -> {
+                _uiState.update { it.copy(bottomTab = intent.tab) }
+                if (intent.tab == BottomNavTab.FOR_YOU && _uiState.value.forYouItems.isEmpty() && !_uiState.value.forYouLoading) {
+                    loadForYou(reset = true)
+                }
+            }
             is MainIntent.SelectProvider -> if (intent.providerId != _uiState.value.activeProviderId) {
                 loadProvider(intent.providerId)
             }
@@ -92,6 +102,9 @@ class MainViewModel : ViewModel() {
                 } else {
                     loadFeed(tabId = _uiState.value.activeTabId, reset = false)
                 }
+            }
+            MainIntent.LoadMoreForYou -> if (_uiState.value.forYouHasMore && !_uiState.value.forYouLoading) {
+                loadForYou(reset = false)
             }
             is MainIntent.ToggleFilterSheet -> _uiState.update { it.copy(showFilterSheet = intent.show) }
             is MainIntent.SelectFilterOption -> _uiState.update { state ->
@@ -136,6 +149,9 @@ class MainViewModel : ViewModel() {
                     activeProviderId = providerId,
                     isLoading = true,
                     items = emptyList(),
+                    forYouItems = emptyList(),
+                    forYouCursor = "",
+                    forYouHasMore = false,
                     selectedFilters = emptyMap(),
                     searchQuery = "",
                     errorMessage = null
@@ -147,9 +163,16 @@ class MainViewModel : ViewModel() {
                 val ladders = p.getFilterLadders()
                 val defaultTab = tabs.firstOrNull { it.isDefault }?.id ?: tabs.firstOrNull()?.id.orEmpty()
                 val page = p.getFeed(defaultTab, cursor = "")
-                Triple(tabs, ladders, defaultTab to page)
-            }.onSuccess { (tabs, ladders, feedPair) ->
-                val (defaultTab, page) = feedPair
+                val forYou = runCatching { p.getForYouFeed("") }.getOrDefault(page)
+                listOf(tabs, ladders, defaultTab, page, forYou)
+            }.onSuccess { res ->
+                @Suppress("UNCHECKED_CAST")
+                val tabs = res[0] as List<TabSpec>
+                @Suppress("UNCHECKED_CAST")
+                val ladders = res[1] as List<FilterLadder>
+                val defaultTab = res[2] as String
+                val page = res[3] as com.liveStream.contract.FeedPage
+                val forYou = res[4] as com.liveStream.contract.FeedPage
                 _uiState.update {
                     it.copy(
                         tabs = tabs,
@@ -158,6 +181,9 @@ class MainViewModel : ViewModel() {
                         items = page.items,
                         nextCursor = page.nextCursor,
                         hasMore = page.hasMore,
+                        forYouItems = forYou.items,
+                        forYouCursor = forYou.nextCursor,
+                        forYouHasMore = forYou.hasMore,
                         isLoading = false
                     )
                 }
@@ -223,6 +249,27 @@ class MainViewModel : ViewModel() {
                     }
                 }.onFailure { err ->
                     _uiState.update { it.copy(isLoading = false, isLoadingMore = false, errorMessage = err.message) }
+                }
+        }
+    }
+
+    private fun loadForYou(reset: Boolean) {
+        viewModelScope.launch {
+            val cursor = if (reset) "" else _uiState.value.forYouCursor
+            _uiState.update { it.copy(forYouLoading = true) }
+            runCatching { activeProvider().getForYouFeed(cursor) }
+                .onSuccess { page ->
+                    _uiState.update { state ->
+                        val merged = if (reset) page.items else (state.forYouItems + page.items).distinctBy { "${it.providerId}:${it.mediaId}" }
+                        state.copy(
+                            forYouItems = merged,
+                            forYouCursor = page.nextCursor,
+                            forYouHasMore = page.hasMore,
+                            forYouLoading = false
+                        )
+                    }
+                }.onFailure {
+                    _uiState.update { it.copy(forYouLoading = false) }
                 }
         }
     }

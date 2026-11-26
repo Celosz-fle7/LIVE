@@ -90,6 +90,8 @@ class MeloloProvider : DramaProvider {
         parseSearchPage(json, offset)
     }
 
+    override suspend fun getForYouFeed(cursor: String): FeedPage = getFeed(tabId = "Populer", cursor = cursor)
+
     override suspend fun search(query: String, cursor: String): FeedPage = withContext(Dispatchers.IO) {
         val offset = cursor.toIntOrNull()?.coerceAtLeast(0) ?: 0
         val params = commonParams + mapOf(
@@ -100,6 +102,8 @@ class MeloloProvider : DramaProvider {
         val json = execGet("/i18n_novel/search/page/v1/", params)
         parseSearchPage(json, offset)
     }
+
+    override suspend fun getForYouFeed(cursor: String): FeedPage = getFeed(tabId = "Populer", cursor = cursor)
 
     override suspend fun getEpisodes(mediaId: String, cursor: String): EpisodePage = withContext(Dispatchers.IO) {
         val params = commonParams + mapOf("series_id" to mediaId)

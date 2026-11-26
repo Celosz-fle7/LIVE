@@ -87,6 +87,8 @@ interface DramaProvider {
 
     suspend fun getTabs(): List<TabSpec>
     suspend fun getFeed(tabId: String, cursor: String = ""): FeedPage
+    suspend fun getForYouFeed(cursor: String = ""): FeedPage =
+        getFeed(getTabs().firstOrNull()?.id.orEmpty(), cursor)
     suspend fun getFilterLadders(): List<FilterLadder> = emptyList()
     suspend fun getFilteredFeed(
         filters: List<FilterSelection>,
