@@ -1,26 +1,18 @@
 package com.liveStream.app.provider.melolo
 
 import android.util.Base64
+import com.liveStream.app.core.InMemoryMediaStore
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.InetAddress
-import java.net.ServerSocket
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Dekriptor CENC (AES-128-CTR) + HTTP 206 loopback proxy untuk stream Melolo (`spade_a`).
+ * Dekriptor CENC (AES-128-CTR) in-memory untuk stream Melolo (`spade_a`).
+ * Tanpa ServerSocket / localhost HTTP server — output disimpan di InMemoryMediaStore (`mem://`).
  */
 object MeloloCencProxy {
-    private val cache = ConcurrentHashMap<String, ByteArray>()
-    private val executor = Executors.newCachedThreadPool()
-    private var serverPort: Int = -1
-    private val lock = Any()
 
     fun preparePlayableUrl(
         cacheKey: String,
@@ -29,92 +21,26 @@ object MeloloCencProxy {
         client: OkHttpClient
     ): String {
         if (spadeA.isBlank()) return rawUrl
+        val memKey = "$cacheKey.mp4"
+        if (InMemoryMediaStore.get(memKey) != null) {
+            return "mem://$memKey"
+        }
+
         val aesKey = extractKeyFromSpadeA(spadeA) ?: return rawUrl
+        val req = Request.Builder()
+            .url(rawUrl)
+            .header("User-Agent", "okhttp/3.10.0.1")
+            .header("Accept", "*/*")
+            .build()
+        val rawBytes = runCatching {
+            client.newCall(req).execute().use { it.body?.bytes() }
+        }.getOrNull() ?: return rawUrl
+        if (rawBytes.isEmpty()) return rawUrl
 
-        val decrypted = cache[cacheKey] ?: run {
-            val req = Request.Builder()
-                .url(rawUrl)
-                .header("User-Agent", "okhttp/3.10.0.1")
-                .header("Accept", "*/*")
-                .build()
-            val rawBytes = client.newCall(req).execute().use { it.body?.bytes() } ?: return rawUrl
-            val clean = decryptMp4Bytes(rawBytes, aesKey)
-            if (cache.size > 6) cache.clear()
-            cache[cacheKey] = clean
-            clean
-        }
-        if (decrypted.isEmpty()) return rawUrl
-        val port = ensureServerStarted()
-        return "http://127.0.0.1:$port/$cacheKey.mp4"
-    }
-
-    private fun ensureServerStarted(): Int {
-        if (serverPort > 0) return serverPort
-        synchronized(lock) {
-            if (serverPort > 0) return serverPort
-            val ss = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
-            serverPort = ss.localPort
-            executor.execute {
-                while (!ss.isClosed) {
-                    val sock = runCatching { ss.accept() }.getOrNull() ?: continue
-                    executor.execute { handleSocket(sock) }
-                }
-            }
-            return serverPort
-        }
-    }
-
-    private fun handleSocket(sock: java.net.Socket) {
-        sock.use { s ->
-            val reader = BufferedReader(InputStreamReader(s.getInputStream()))
-            val reqLine = reader.readLine() ?: return
-            var rangeHeader: String? = null
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.isEmpty()) break
-                if (line.startsWith("Range:", ignoreCase = true)) {
-                    rangeHeader = line.substringAfter(":").trim()
-                }
-            }
-
-            val path = reqLine.split(" ").getOrNull(1).orEmpty().trimStart('/').removeSuffix(".mp4")
-            val data = cache[path]
-            val out = s.getOutputStream()
-            if (data == null) {
-                out.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".toByteArray())
-                out.flush()
-                return
-            }
-
-            val total = data.size
-            var start = 0
-            var end = total - 1
-            var isRange = false
-            if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
-                isRange = true
-                val parts = rangeHeader.removePrefix("bytes=").split("-")
-                start = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, total - 1) ?: 0
-                end = parts.getOrNull(1)?.takeIf { it.isNotEmpty() }?.toIntOrNull()?.coerceIn(start, total - 1)
-                    ?: (total - 1)
-            }
-
-            val len = (end - start + 1).coerceAtLeast(0)
-            val hdr = buildString {
-                if (isRange) {
-                    append("HTTP/1.1 206 Partial Content\r\n")
-                    append("Content-Range: bytes $start-$end/$total\r\n")
-                } else {
-                    append("HTTP/1.1 200 OK\r\n")
-                }
-                append("Content-Type: video/mp4\r\n")
-                append("Accept-Ranges: bytes\r\n")
-                append("Content-Length: $len\r\n")
-                append("Connection: close\r\n\r\n")
-            }
-            out.write(hdr.toByteArray())
-            out.write(data, start, len)
-            out.flush()
-        }
+        val clean = decryptMp4Bytes(rawBytes, aesKey)
+        if (clean.isEmpty()) return rawUrl
+        InMemoryMediaStore.put(memKey, clean)
+        return "mem://$memKey"
     }
 
     private fun extractKeyFromSpadeA(spadeABase64: String): ByteArray? = runCatching {
@@ -191,10 +117,13 @@ object MeloloCencProxy {
         val sencPos = findBox(data, "senc", trakPos, trakEnd)
         if (stszPos < 0 || stcoPos < 0 || stscPos < 0 || sencPos < 0) return
 
+        val fixedSize = readU32(data, stszPos + 8)
         val scnt = readU32(data, stszPos + 12)
         val ivCnt = readU32(data, sencPos + 8)
         if (scnt <= 0 || ivCnt != scnt) return
-        val sizes = IntArray(scnt) { i -> readU32(data, stszPos + 16 + i * 4) }
+        val sizes = IntArray(scnt) { i ->
+            if (fixedSize != 0) fixedSize else readU32(data, stszPos + 16 + i * 4)
+        }
 
         val ccnt = readU32(data, stcoPos + 8)
         val chunks = IntArray(ccnt) { i -> readU32(data, stcoPos + 12 + i * 4) }
@@ -221,18 +150,47 @@ object MeloloCencProxy {
             }
         }
 
+        val sencFlags = readU32(data, sencPos + 4) and 0x00FFFFFF
+        val hasSubsamples = (sencFlags and 0x02) != 0
+        var sencCursor = sencPos + 12
         val cipher = Cipher.getInstance("AES/CTR/NoPadding")
         val iv16 = ByteArray(16)
+
         for (i in 0 until scnt) {
+            if (sencCursor + 8 > data.size) break
             val off = sampleOffsets[i]
             val sz = sizes[i]
-            if (off < 0 || off + sz > data.size || sz <= 0) continue
-            val ivOff = sencPos + 12 + i * 8
-            System.arraycopy(data, ivOff, iv16, 0, 8)
+            System.arraycopy(data, sencCursor, iv16, 0, 8)
             for (k in 8 until 16) iv16[k] = 0
-            cipher.init(Cipher.DECRYPT_MODE, keySpec, IvParameterSpec(iv16))
-            val dec = cipher.doFinal(data, off, sz)
-            System.arraycopy(dec, 0, data, off, minOf(sz, dec.size))
+            sencCursor += 8
+
+            if (!hasSubsamples) {
+                if (off >= 0 && off + sz <= data.size && sz > 0) {
+                    cipher.init(Cipher.DECRYPT_MODE, keySpec, IvParameterSpec(iv16))
+                    val dec = cipher.doFinal(data, off, sz)
+                    System.arraycopy(dec, 0, data, off, minOf(sz, dec.size))
+                }
+            } else {
+                if (sencCursor + 2 > data.size) break
+                val subCount = readU16(data, sencCursor)
+                sencCursor += 2
+                cipher.init(Cipher.DECRYPT_MODE, keySpec, IvParameterSpec(iv16))
+                var sampleCur = off
+                for (sub in 0 until subCount) {
+                    if (sencCursor + 6 > data.size) break
+                    val clearBytes = readU16(data, sencCursor)
+                    val encBytes = readU32(data, sencCursor + 2)
+                    sencCursor += 6
+                    sampleCur += clearBytes
+                    if (encBytes > 0 && sampleCur >= 0 && sampleCur + encBytes <= data.size) {
+                        val dec = cipher.update(data, sampleCur, encBytes)
+                        if (dec != null) {
+                            System.arraycopy(dec, 0, data, sampleCur, minOf(encBytes, dec.size))
+                        }
+                        sampleCur += encBytes
+                    }
+                }
+            }
         }
     }
 
@@ -260,6 +218,9 @@ object MeloloCencProxy {
         }
         return -1
     }
+
+    private fun readU16(data: ByteArray, off: Int): Int =
+        ((data[off].toInt() and 0xFF) shl 8) or (data[off + 1].toInt() and 0xFF)
 
     private fun readU32(data: ByteArray, off: Int): Int =
         ((data[off].toInt() and 0xFF) shl 24) or

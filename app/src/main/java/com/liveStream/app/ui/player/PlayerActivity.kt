@@ -73,6 +73,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.liveStream.app.core.InMemoryMediaStore
 import com.liveStream.app.provider.ProviderRegistry
 import com.liveStream.app.ui.theme.AccentGold
 import com.liveStream.app.ui.theme.AccentRed
@@ -266,7 +267,7 @@ private fun FullScreenVerticalPlayer(
             }?.langCode ?: src.audioTracks.firstOrNull()?.langCode ?: "id"
             selectedAudioLang = defaultAudio
 
-            val dsFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(src.headers)
+            val dsFactory = InMemoryMediaStore.createDataSourceFactory(src.headers)
             val subs = src.subtitles.map { sub ->
                 val isDef = selectedSubLang != "off" && sub.langCode.equals(selectedSubLang, ignoreCase = true)
                 MediaItem.SubtitleConfiguration.Builder(Uri.parse(sub.url))
