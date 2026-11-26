@@ -353,10 +353,16 @@ private fun FullScreenVerticalPlayer(
             playback = PlaybackSource("")
             return@LaunchedEffect
         }
-        val src = runCatching { provider.resolvePlayback(mediaId, currentEp.episodeId) }.getOrNull()
+        val res = runCatching { provider.resolvePlayback(mediaId, currentEp.episodeId) }
+        val src = res.getOrNull()
         playback = src
         if (src == null || src.streamUrl.isBlank()) {
-            streamError = "Stream tidak tersedia dari server (${provider.displayName})"
+            val err = res.exceptionOrNull()
+            streamError = if (err != null) {
+                "Error (${provider.displayName}): ${err.javaClass.simpleName}: ${err.message}"
+            } else {
+                "Stream tidak tersedia dari server (${provider.displayName})"
+            }
             return@LaunchedEffect
         }
         if (src.streamUrl.isNotBlank()) {

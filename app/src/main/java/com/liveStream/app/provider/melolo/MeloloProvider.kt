@@ -189,7 +189,7 @@ class MeloloProvider : DramaProvider {
                 Log.d("MeloloProvider", "video_model(fallback) media=$mediaId ep=$episodeId code=$code msg=${json.optString("message")}")
             }
             if (code != 0) {
-                return@withContext PlaybackSource(streamUrl = "")
+                throw IllegalStateException("video_model code=$code msg=${json.optString("message")}")
             }
 
             val data = json.optJSONObject("data") ?: return@withContext PlaybackSource(streamUrl = "")

@@ -238,6 +238,62 @@ class DramaBoxProvider : DramaProvider {
                 extractPlaybackFromChapter(mediaId, episodeId, chInfo)?.let { return@withContext it }
             }
 
+            // Handshake unlock + primeGuestRewards (sama seperti dramabox_source.dart)
+            var unlock = execPost(
+                "/chapterv2/unlock",
+                JSONObject().apply {
+                    put("bookId", mediaId)
+                    put("chapterId", episodeId)
+                    put("index", chIdx)
+                    put("unLockType", 1)
+                    put("autoPay", true)
+                    put("confirmPay", true)
+                    put("vip", true)
+                }
+            )
+            val uStatus = unlock.optInt("status", -1)
+            if (uStatus == 8 || unlock.optJSONObject("data")?.optInt("status", -1) == 8) {
+                execPost("/sn001/sign", JSONObject().put("signId", 61))
+                for (tid in listOf(902, 632, 1002)) {
+                    execPost("/pt001/claimReward", JSONObject().put("seriesId", mediaId).put("taskId", tid))
+                }
+                unlock = execPost(
+                    "/chapterv2/unlock",
+                    JSONObject().apply {
+                        put("bookId", mediaId)
+                        put("chapterId", episodeId)
+                        put("index", chIdx)
+                        put("unLockType", 1)
+                        put("autoPay", true)
+                        put("confirmPay", true)
+                        put("vip", true)
+                    }
+                )
+            }
+            val uList = unlock.optJSONObject("data")?.optJSONArray("chapterList")
+            if (uList != null) {
+                for (i in 0 until uList.length()) {
+                    val ch = uList.optJSONObject(i) ?: continue
+                    if (ch.optString("chapterId") == episodeId || ch.optInt("chapterIndex", -1) == chIdx) {
+                        extractPlaybackFromChapter(mediaId, episodeId, ch)?.let { return@withContext it }
+                    }
+                }
+            }
+
+            val postUnlockSingle = execPost(
+                "/cr001/load",
+                JSONObject().apply {
+                    put("bookId", mediaId)
+                    put("chapterId", episodeId)
+                }
+            )
+            postUnlockSingle.optJSONObject("data")?.optJSONObject("chapterInfo")?.let { ch2 ->
+                extractPlaybackFromChapter(mediaId, episodeId, ch2)?.let { return@withContext it }
+            }
+
+            if (lastServerError != null) {
+                throw IllegalStateException(lastServerError)
+            }
             PlaybackSource(streamUrl = "")
         }
 
