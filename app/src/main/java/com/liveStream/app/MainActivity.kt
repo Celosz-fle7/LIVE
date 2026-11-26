@@ -21,12 +21,15 @@ class MainActivity : ComponentActivity() {
             LiveStreamTheme {
                 MainScreen(
                     viewModel = viewModel,
-                    onOpenPlayer = { item, startPositionMs ->
+                    onOpenPlayer = { item, startEpisodeIndex, startPositionMs ->
                         startActivity(
                             Intent(this, PlayerActivity::class.java).apply {
                                 putExtra("EXTRA_PROVIDER_ID", item.providerId)
                                 putExtra("EXTRA_MEDIA_ID", item.mediaId)
                                 putExtra("EXTRA_TITLE", item.title)
+                                putExtra("EXTRA_COVER_URL", item.coverUrl)
+                                putExtra("EXTRA_TOTAL_EPISODES", item.totalEpisodes)
+                                putExtra("EXTRA_START_EPISODE_INDEX", startEpisodeIndex)
                                 putExtra("EXTRA_START_POSITION_MS", startPositionMs)
                             }
                         )

@@ -64,6 +64,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -79,6 +82,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.liveStream.app.core.InMemoryMediaStore
+import com.liveStream.app.core.WatchHistoryEntry
+import com.liveStream.app.core.WatchHistoryStore
 import com.liveStream.app.provider.ProviderRegistry
 import com.liveStream.app.ui.theme.AccentGold
 import com.liveStream.app.ui.theme.AccentRed
@@ -99,6 +104,9 @@ class PlayerActivity : ComponentActivity() {
         val providerId = intent.getStringExtra("EXTRA_PROVIDER_ID").orEmpty()
         val mediaId = intent.getStringExtra("EXTRA_MEDIA_ID").orEmpty()
         val title = intent.getStringExtra("EXTRA_TITLE").orEmpty()
+        val coverUrl = intent.getStringExtra("EXTRA_COVER_URL").orEmpty()
+        val totalEpisodes = intent.getIntExtra("EXTRA_TOTAL_EPISODES", 0)
+        val startEpisodeIndex = intent.getIntExtra("EXTRA_START_EPISODE_INDEX", 0).coerceAtLeast(0)
         val startPositionMs = intent.getLongExtra("EXTRA_START_POSITION_MS", 0L).coerceAtLeast(0L)
 
         setContent {
@@ -107,6 +115,9 @@ class PlayerActivity : ComponentActivity() {
                     providerId = providerId,
                     mediaId = mediaId,
                     title = title,
+                    coverUrl = coverUrl,
+                    totalEpisodes = totalEpisodes,
+                    initialEpisodeIndex = startEpisodeIndex,
                     initialStartPosMs = startPositionMs,
                     onBack = { finish() }
                 )
@@ -122,10 +133,14 @@ private fun FullScreenVerticalPlayer(
     providerId: String,
     mediaId: String,
     title: String,
+    coverUrl: String,
+    totalEpisodes: Int,
+    initialEpisodeIndex: Int,
     initialStartPosMs: Long,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val provider = remember(providerId) { ProviderRegistry.get(providerId) }
 
@@ -257,9 +272,60 @@ private fun FullScreenVerticalPlayer(
         return
     }
 
-    val pagerState = rememberPagerState(pageCount = { episodes.size })
+    val safeInitialEp = initialEpisodeIndex.coerceIn(0, (episodes.size - 1).coerceAtLeast(0))
+    val pagerState = rememberPagerState(initialPage = safeInitialEp, pageCount = { episodes.size })
     val currentEpIndex = pagerState.currentPage
     val currentEp = episodes[currentEpIndex]
+
+    fun saveProgressNow() {
+        val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+        WatchHistoryStore.save(
+            context,
+            WatchHistoryEntry(
+                providerId = providerId,
+                mediaId = mediaId,
+                title = title,
+                coverUrl = coverUrl,
+                totalEpisodes = if (totalEpisodes > 0) totalEpisodes else episodes.size,
+                episodeIndex = currentEpIndex,
+                episodeNumber = currentEp.number,
+                positionMs = pos,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    DisposableEffect(lifecycleOwner, exoPlayer, currentEpIndex) {
+        val lifecycleObserver = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    saveProgressNow()
+                    exoPlayer.playWhenReady = false
+                    exoPlayer.pause()
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    if (activePlayingEpIndex == currentEpIndex && !isPaused) {
+                        exoPlayer.playWhenReady = true
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+        onDispose {
+            saveProgressNow()
+            lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
+        }
+    }
+
+    LaunchedEffect(activePlayingEpIndex, currentEpIndex) {
+        var ticks = 0
+        while (activePlayingEpIndex == currentEpIndex) {
+            ticks++
+            if (ticks % 7 == 0) saveProgressNow()
+            kotlinx.coroutines.delay(300L)
+        }
+    }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -324,7 +390,7 @@ private fun FullScreenVerticalPlayer(
             exoPlayer.setMediaSource(DefaultMediaSourceFactory(dsFactory).createMediaSource(item))
             exoPlayer.setPlaybackSpeed(playbackSpeed)
             exoPlayer.prepare()
-            if (currentEpIndex == 0 && pendingStartPosMs > 0L) {
+            if (currentEpIndex == safeInitialEp && pendingStartPosMs > 0L) {
                 exoPlayer.seekTo(pendingStartPosMs)
                 pendingStartPosMs = 0L
             }

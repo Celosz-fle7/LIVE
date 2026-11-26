@@ -85,6 +85,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -105,6 +108,7 @@ import coil.compose.AsyncImage
 import com.liveStream.app.BuildConfig
 import com.liveStream.app.core.InMemoryMediaStore
 import com.liveStream.app.core.NativeCore
+import com.liveStream.app.core.WatchHistoryStore
 import com.liveStream.app.core.updater.AppUpdater
 import com.liveStream.app.core.updater.UpdateInfo
 import com.liveStream.app.provider.ProviderRegistry
@@ -123,7 +127,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
-    onOpenPlayer: (MediaItem, Long) -> Unit
+    onOpenPlayer: (MediaItem, Int, Long) -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -213,7 +217,10 @@ fun MainScreen(
                             state = state,
                             onIntent = viewModel::onIntent,
                             onOpenDrawer = { scope.launch { drawerState.open() } },
-                            onOpenPlayer = { onOpenPlayer(it, 0L) }
+                            onOpenPlayer = { item ->
+                                val hist = WatchHistoryStore.find(context, item.providerId, item.mediaId)
+                                onOpenPlayer(item, hist?.episodeIndex ?: 0, hist?.positionMs ?: 0L)
+                            }
                         )
                         BottomNavTab.FOR_YOU -> ForYouPagerPage(
                             tabs = state.forYouTabs,
@@ -224,9 +231,12 @@ fun MainScreen(
                             isVisible = state.bottomTab == BottomNavTab.FOR_YOU,
                             isLoading = state.forYouLoading,
                             onIntent = viewModel::onIntent,
-                            onOpenPlayer = onOpenPlayer
+                            onOpenPlayer = { item, resumeMs -> onOpenPlayer(item, 0, resumeMs) }
                         )
-                        BottomNavTab.MY_LIST -> FavoritesPage(state.favorites) { onOpenPlayer(it, 0L) }
+                        BottomNavTab.MY_LIST -> FavoritesPage(
+                            favorites = state.favorites,
+                            onOpenPlayer = { item, epIdx, posMs -> onOpenPlayer(item, epIdx, posMs) }
+                        )
                         BottomNavTab.PROFILE -> ProfilePage(
                             state = state,
                             statusText = updateStatusText,
@@ -637,6 +647,7 @@ private fun ForYouPagerPage(
             }
         } else {
             val context = LocalContext.current
+            val lifecycleOwner = LocalLifecycleOwner.current
             val scope = rememberCoroutineScope()
             val safeInitial = initialPage.coerceIn(0, (items.size - 1).coerceAtLeast(0))
             val pagerState = rememberPagerState(initialPage = safeInitial, pageCount = { items.size })
@@ -650,6 +661,27 @@ private fun ForYouPagerPage(
             var currentPosMs by remember { mutableStateOf(0L) }
             var durationMs by remember { mutableStateOf(0L) }
             var playbackSpeed by remember { mutableStateOf(1.0f) }
+
+            DisposableEffect(lifecycleOwner, exoPlayer) {
+                val lifecycleObserver = LifecycleEventObserver { _, event ->
+                    when (event) {
+                        Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                            exoPlayer.playWhenReady = false
+                            exoPlayer.pause()
+                        }
+                        Lifecycle.Event.ON_RESUME -> {
+                            if (isVisible && activePlayingKey.isNotEmpty() && !isPaused) {
+                                exoPlayer.playWhenReady = true
+                            }
+                        }
+                        else -> Unit
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+                onDispose {
+                    lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
+                }
+            }
 
             DisposableEffect(exoPlayer) {
                 val listener = object : Player.Listener {
@@ -986,21 +1018,103 @@ private fun formatDurationMs(ms: Long): String {
 }
 
 @Composable
-private fun FavoritesPage(favorites: List<MediaItem>, onOpenPlayer: (MediaItem) -> Unit) {
-    if (favorites.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Koleksi masih kosong", color = TextSecondary)
+private fun FavoritesPage(
+    favorites: List<MediaItem>,
+    onOpenPlayer: (MediaItem, Int, Long) -> Unit
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var selectedSubTab by remember { mutableIntStateOf(0) } // 0 = Riwayat Tonton, 1 = Favorit
+    var historyList by remember { mutableStateOf(WatchHistoryStore.loadAll(context)) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                historyList = WatchHistoryStore.loadAll(context)
+            }
         }
-    } else {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 112.dp),
-            contentPadding = PaddingValues(12.dp),
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+    ) {
+        Row(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize().statusBarsPadding()
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
-            items(favorites, key = { "${it.providerId}:${it.mediaId}" }) { item ->
-                PosterCard(item = item, onClick = { onOpenPlayer(item) })
+            listOf("Riwayat Tonton", "Favorit").forEachIndexed { idx, label ->
+                val active = selectedSubTab == idx
+                Text(
+                    text = if (idx == 0) "$label (${historyList.size})" else "$label (${favorites.size})",
+                    color = if (active) Color.White else TextSecondary,
+                    fontSize = 13.sp,
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (active) AccentRed else SurfaceElevated)
+                        .clickable {
+                            selectedSubTab = idx
+                            if (idx == 0) historyList = WatchHistoryStore.loadAll(context)
+                        }
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                )
+            }
+        }
+
+        if (selectedSubTab == 0) {
+            if (historyList.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Belum ada riwayat tontonan", color = TextSecondary)
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 112.dp),
+                    contentPadding = PaddingValues(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(historyList, key = { "${it.providerId}:${it.mediaId}" }) { h ->
+                        val item = h.toMediaItem().copy(
+                            badge = "Ep ${h.episodeNumber} • ${formatDurationMs(h.positionMs)}"
+                        )
+                        PosterCard(
+                            item = item,
+                            onClick = { onOpenPlayer(item, h.episodeIndex, h.positionMs) }
+                        )
+                    }
+                }
+            }
+        } else {
+            if (favorites.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Belum ada drama favorit", color = TextSecondary)
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 112.dp),
+                    contentPadding = PaddingValues(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(favorites, key = { "${it.providerId}:${it.mediaId}" }) { item ->
+                        val hist = historyList.firstOrNull { it.providerId == item.providerId && it.mediaId == item.mediaId }
+                        val displayItem = if (hist != null) {
+                            item.copy(badge = "Ep ${hist.episodeNumber} • ${formatDurationMs(hist.positionMs)}")
+                        } else item
+                        PosterCard(
+                            item = displayItem,
+                            onClick = { onOpenPlayer(item, hist?.episodeIndex ?: 0, hist?.positionMs ?: 0L) }
+                        )
+                    }
+                }
             }
         }
     }
