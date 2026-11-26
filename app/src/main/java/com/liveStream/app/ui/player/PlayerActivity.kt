@@ -125,6 +125,7 @@ private fun FullScreenVerticalPlayer(
     var playback by remember { mutableStateOf<PlaybackSource?>(null) }
     var activePlayingEpIndex by remember { mutableIntStateOf(-1) }
     var isPaused by remember { mutableStateOf(false) }
+    var streamError by remember { mutableStateOf<String?>(null) }
 
     // Default subtitle = Indonesia (atau "off" jika dimatikan)
     var selectedSubLang by remember { mutableStateOf("id") }
@@ -239,6 +240,7 @@ private fun FullScreenVerticalPlayer(
     LaunchedEffect(currentEpIndex) {
         activePlayingEpIndex = -1
         isPaused = false
+        streamError = null
         exoPlayer.stop()
         if (currentEp.isLocked) {
             playback = PlaybackSource("")
@@ -246,7 +248,11 @@ private fun FullScreenVerticalPlayer(
         }
         val src = runCatching { provider.resolvePlayback(mediaId, currentEp.episodeId) }.getOrNull()
         playback = src
-        if (src != null && src.streamUrl.isNotBlank()) {
+        if (src == null || src.streamUrl.isBlank()) {
+            streamError = "Stream tidak tersedia dari server (${provider.displayName})"
+            return@LaunchedEffect
+        }
+        if (src.streamUrl.isNotBlank()) {
             // Pilih subtitle Indonesia default jika tersedia
             val defaultSub = src.subtitles.firstOrNull {
                 val l = it.langCode.lowercase()
@@ -323,6 +329,8 @@ private fun FullScreenVerticalPlayer(
                     )
                 } else if (ep.isLocked) {
                     Text("Episode ${ep.number} terkunci di provider", color = TextSecondary, fontSize = 14.sp)
+                } else if (idx == currentEpIndex && streamError != null) {
+                    Text(streamError!!, color = TextSecondary, fontSize = 14.sp)
                 } else {
                     CircularProgressIndicator(color = AccentRed)
                 }

@@ -43,6 +43,8 @@ data class MainUiState(
     val filterLadders: List<FilterLadder> = emptyList(),
     val selectedFilters: Map<String, FilterSelection> = emptyMap(),
     val showFilterSheet: Boolean = false,
+    val forYouTabs: List<TabSpec> = emptyList(),
+    val activeForYouTabId: String = "",
     val forYouItems: List<MediaItem> = emptyList(),
     val forYouCursor: String = "",
     val forYouHasMore: Boolean = false,
@@ -61,6 +63,7 @@ sealed interface MainIntent {
     data object Refresh : MainIntent
     data object LoadNextPage : MainIntent
     data object LoadMoreForYou : MainIntent
+    data class SelectForYouTab(val tabId: String) : MainIntent
     data class SetForYouPage(val index: Int) : MainIntent
     data class ToggleFilterSheet(val show: Boolean) : MainIntent
     data class SelectFilterOption(val selection: FilterSelection) : MainIntent
@@ -107,6 +110,18 @@ class MainViewModel : ViewModel() {
             }
             MainIntent.LoadMoreForYou -> if (_uiState.value.forYouHasMore && !_uiState.value.forYouLoading) {
                 loadForYou(reset = false)
+            }
+            is MainIntent.SelectForYouTab -> {
+                _uiState.update {
+                    it.copy(
+                        activeForYouTabId = intent.tabId,
+                        forYouItems = emptyList(),
+                        forYouCursor = "",
+                        forYouHasMore = false,
+                        forYouPageIndex = 0
+                    )
+                }
+                loadForYou(reset = true)
             }
             is MainIntent.SetForYouPage -> _uiState.update { it.copy(forYouPageIndex = intent.index) }
             is MainIntent.ToggleFilterSheet -> _uiState.update { it.copy(showFilterSheet = intent.show) }
@@ -167,8 +182,10 @@ class MainViewModel : ViewModel() {
                 val ladders = p.getFilterLadders()
                 val defaultTab = tabs.firstOrNull { it.isDefault }?.id ?: tabs.firstOrNull()?.id.orEmpty()
                 val page = p.getFeed(defaultTab, cursor = "")
-                val forYou = runCatching { p.getForYouFeed("") }.getOrDefault(page)
-                listOf(tabs, ladders, defaultTab, page, forYou)
+                val fyTabs = runCatching { p.getForYouTabs() }.getOrDefault(emptyList())
+                val defaultFyTab = fyTabs.firstOrNull { it.isDefault }?.id ?: fyTabs.firstOrNull()?.id.orEmpty()
+                val forYou = runCatching { p.getForYouFeed(defaultFyTab, "") }.getOrDefault(page)
+                listOf(tabs, ladders, defaultTab, page, forYou, fyTabs, defaultFyTab)
             }.onSuccess { res ->
                 @Suppress("UNCHECKED_CAST")
                 val tabs = res[0] as List<TabSpec>
@@ -177,6 +194,9 @@ class MainViewModel : ViewModel() {
                 val defaultTab = res[2] as String
                 val page = res[3] as com.liveStream.contract.FeedPage
                 val forYou = res[4] as com.liveStream.contract.FeedPage
+                @Suppress("UNCHECKED_CAST")
+                val fyTabs = res[5] as List<TabSpec>
+                val defaultFyTab = res[6] as String
                 _uiState.update {
                     it.copy(
                         tabs = tabs,
@@ -185,6 +205,8 @@ class MainViewModel : ViewModel() {
                         items = page.items,
                         nextCursor = page.nextCursor,
                         hasMore = page.hasMore,
+                        forYouTabs = fyTabs,
+                        activeForYouTabId = defaultFyTab,
                         forYouItems = forYou.items,
                         forYouCursor = forYou.nextCursor,
                         forYouHasMore = forYou.hasMore,
@@ -260,8 +282,9 @@ class MainViewModel : ViewModel() {
     private fun loadForYou(reset: Boolean) {
         viewModelScope.launch {
             val cursor = if (reset) "" else _uiState.value.forYouCursor
+            val tabId = _uiState.value.activeForYouTabId
             _uiState.update { it.copy(forYouLoading = true) }
-            runCatching { activeProvider().getForYouFeed(cursor) }
+            runCatching { activeProvider().getForYouFeed(tabId, cursor) }
                 .onSuccess { page ->
                     _uiState.update { state ->
                         val merged = if (reset) page.items else (state.forYouItems + page.items).distinctBy { "${it.providerId}:${it.mediaId}" }

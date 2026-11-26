@@ -68,7 +68,17 @@ class PineDramaProvider : DramaProvider {
         parseCollectionPage(json)
     }
 
-    override suspend fun getForYouFeed(cursor: String): FeedPage = getFeed(tabId = "5", cursor = cursor)
+    override suspend fun getForYouTabs(): List<TabSpec> = listOf(
+        TabSpec("5", "Mini Drama", isDefault = true),
+        TabSpec("anime", "Anime")
+    )
+
+    override suspend fun getForYouFeed(tabId: String, cursor: String): FeedPage =
+        if (tabId == "anime") {
+            getFilteredFeed(listOf(FilterSelection("ladder_0", "7628991192537158672", 2)), cursor)
+        } else {
+            getFeed(tabId = "5", cursor = cursor)
+        }
 
     override suspend fun getFilterLadders(): List<FilterLadder> = withContext(Dispatchers.IO) {
         if (cachedLadders.isNotEmpty()) return@withContext cachedLadders

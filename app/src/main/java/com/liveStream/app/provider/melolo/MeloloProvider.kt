@@ -94,7 +94,13 @@ class MeloloProvider : DramaProvider {
         parseSearchPage(json, offset)
     }
 
-    override suspend fun getForYouFeed(cursor: String): FeedPage = getFeed(tabId = "Populer", cursor = cursor)
+    override suspend fun getForYouTabs(): List<TabSpec> = listOf(
+        TabSpec("Populer", "Untukmu", isDefault = true),
+        TabSpec("Anime", "Anime")
+    )
+
+    override suspend fun getForYouFeed(tabId: String, cursor: String): FeedPage =
+        getFeed(tabId = tabId.ifBlank { "Populer" }, cursor = cursor)
 
     override suspend fun getFilterLadders(): List<FilterLadder> = listOf(
         FilterLadder(
@@ -164,13 +170,15 @@ class MeloloProvider : DramaProvider {
             val payloadMap = mapOf(
                 "series_id" to mediaId,
                 "video_id" to episodeId,
+                "item_id" to episodeId,
                 "video_platform" to "3"
             )
             val bodyStr = payloadMap.entries.joinToString("&") { (k, v) ->
                 "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
             }
             val json = execPostForm("/novel/player/video_model/v1/", commonParams, bodyStr)
-            if (json.optInt("code", -1) != 0) {
+            val code = json.optInt("code", json.optJSONObject("BaseResp")?.optInt("StatusCode", -1) ?: -1)
+            if (code != 0) {
                 return@withContext PlaybackSource(streamUrl = "")
             }
 

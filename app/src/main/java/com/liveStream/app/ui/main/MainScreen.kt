@@ -213,6 +213,8 @@ fun MainScreen(
                             onOpenPlayer = onOpenPlayer
                         )
                         BottomNavTab.FOR_YOU -> ForYouPagerPage(
+                            tabs = state.forYouTabs,
+                            activeTabId = state.activeForYouTabId,
                             items = state.forYouItems,
                             favorites = state.favorites,
                             initialPage = state.forYouPageIndex,
@@ -611,6 +613,8 @@ private fun PosterCard(item: MediaItem, onClick: () -> Unit) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ForYouPagerPage(
+    tabs: List<com.liveStream.contract.TabSpec>,
+    activeTabId: String,
     items: List<MediaItem>,
     favorites: List<MediaItem>,
     initialPage: Int,
@@ -619,227 +623,268 @@ private fun ForYouPagerPage(
     onIntent: (MainIntent) -> Unit,
     onOpenPlayer: (MediaItem) -> Unit
 ) {
-    if (items.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (isLoading) {
-                CircularProgressIndicator(color = AccentRed)
-            } else {
-                Text("Belum ada rekomendasi", color = TextSecondary)
-            }
-        }
-        return
-    }
-
-    val context = LocalContext.current
-    val safeInitial = initialPage.coerceIn(0, (items.size - 1).coerceAtLeast(0))
-    val pagerState = rememberPagerState(initialPage = safeInitial, pageCount = { items.size })
-    val exoPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ONE
-        }
-    }
-    var activePlayingKey by remember { mutableStateOf("") }
-    var isPaused by remember { mutableStateOf(false) }
-
-    DisposableEffect(Unit) {
-        onDispose { exoPlayer.release() }
-    }
-
-    LaunchedEffect(pagerState.currentPage) {
-        onIntent(MainIntent.SetForYouPage(pagerState.currentPage))
-    }
-
-    LaunchedEffect(isVisible) {
-        if (!isVisible) {
-            exoPlayer.playWhenReady = false
-            exoPlayer.pause()
-        } else if (activePlayingKey.isNotEmpty()) {
-            exoPlayer.playWhenReady = !isPaused
-        }
-    }
-
-    val currentItem = items.getOrNull(pagerState.currentPage)
-    LaunchedEffect(currentItem?.providerId, currentItem?.mediaId, isVisible) {
-        val item = currentItem ?: return@LaunchedEffect
-        if (!isVisible) return@LaunchedEffect
-        val key = "${item.providerId}:${item.mediaId}"
-        if (pagerState.currentPage >= items.size - 4) {
-            onIntent(MainIntent.LoadMoreForYou)
-        }
-        activePlayingKey = ""
-        isPaused = false
-        exoPlayer.stop()
-
-        val provider = ProviderRegistry.get(item.providerId)
-        val eps = runCatching { provider.getEpisodes(item.mediaId).episodes }.getOrDefault(emptyList())
-        val firstEp = eps.firstOrNull { !it.isLocked } ?: return@LaunchedEffect
-        val src = runCatching { provider.resolvePlayback(item.mediaId, firstEp.episodeId) }.getOrNull()
-            ?: return@LaunchedEffect
-        if (src.streamUrl.isNotBlank() && isVisible) {
-            val dsFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(src.headers)
-            val mediaSource = DefaultMediaSourceFactory(dsFactory)
-                .createMediaSource(ExoMediaItem.fromUri(src.streamUrl))
-            exoPlayer.setMediaSource(mediaSource)
-            exoPlayer.prepare()
-            exoPlayer.playWhenReady = true
-            activePlayingKey = key
-        }
-    }
-
-    VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { idx ->
-        val item = items[idx]
-        val isCurrent = idx == pagerState.currentPage && activePlayingKey == "${item.providerId}:${item.mediaId}"
-        val isSaved = favorites.any { it.providerId == item.providerId && it.mediaId == item.mediaId }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black)
-                .clickable {
-                    if (isCurrent) {
-                        isPaused = !isPaused
-                        exoPlayer.playWhenReady = !isPaused
-                    }
-                }
-        ) {
-            if (item.coverUrl.isNotBlank()) {
-                AsyncImage(
-                    model = item.coverUrl,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            if (isCurrent) {
-                AndroidView(
-                    factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            useController = false
-                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                            player = exoPlayer
-                        }
-                    },
-                    update = { it.player = exoPlayer },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            // Gradient overlay bawah
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(220.dp)
-                    .align(Alignment.BottomCenter)
-                    .background(
-                        Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC0A0B0F), BgDark))
-                    )
-            )
-
-            // Info detail konten & tombol tonton di kiri bawah
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 16.dp, end = 84.dp, bottom = 24.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = ProviderRegistry.get(item.providerId).displayName,
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(AccentRed.copy(alpha = 0.85f))
-                            .padding(horizontal = 7.dp, vertical = 2.dp)
-                    )
-                    if (!item.badge.isNullOrBlank()) {
-                        Text(
-                            text = item.badge!!,
-                            color = Color.Black,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(AccentGold)
-                                .padding(horizontal = 7.dp, vertical = 2.dp)
-                        )
-                    }
-                    if (item.totalEpisodes > 0) {
-                        Text(
-                            text = "${item.totalEpisodes} Ep",
-                            color = TextPrimary,
-                            fontSize = 11.sp,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(Color(0x88000000))
-                                .padding(horizontal = 7.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(item.title, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                if (item.tags.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(item.tags.joinToString(" • "), color = AccentGold, fontSize = 12.sp, maxLines = 1)
-                }
-                if (item.description.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = item.description,
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        if (items.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                if (isLoading) {
+                    CircularProgressIndicator(color = AccentRed)
                 } else {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "Cuplikan Episode 1 • Tap untuk jeda/lanjut",
-                        color = TextSecondary,
-                        fontSize = 11.sp
-                    )
+                    Text("Belum ada rekomendasi", color = TextSecondary)
                 }
-                Spacer(Modifier.height(10.dp))
-                Button(
-                    onClick = {
-                        exoPlayer.pause()
-                        onOpenPlayer(item)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentRed)
-                ) {
-                    Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Tonton Lengkap (${item.totalEpisodes} Ep)")
+            }
+        } else {
+            val context = LocalContext.current
+            val safeInitial = initialPage.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+            val pagerState = rememberPagerState(initialPage = safeInitial, pageCount = { items.size })
+            val exoPlayer = remember {
+                ExoPlayer.Builder(context).build().apply {
+                    repeatMode = Player.REPEAT_MODE_ONE
+                }
+            }
+            var activePlayingKey by remember { mutableStateOf("") }
+            var isPaused by remember { mutableStateOf(false) }
+
+            DisposableEffect(Unit) {
+                onDispose { exoPlayer.release() }
+            }
+
+            LaunchedEffect(pagerState.currentPage) {
+                onIntent(MainIntent.SetForYouPage(pagerState.currentPage))
+            }
+
+            LaunchedEffect(isVisible) {
+                if (!isVisible) {
+                    exoPlayer.playWhenReady = false
+                    exoPlayer.pause()
+                } else if (activePlayingKey.isNotEmpty()) {
+                    exoPlayer.playWhenReady = !isPaused
                 }
             }
 
-            // Aksi Koleksi & Episode di kanan bawah
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 14.dp, bottom = 28.dp)
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.clickable { onIntent(MainIntent.ToggleFavorite(item)) }
+            val currentItem = items.getOrNull(pagerState.currentPage)
+            LaunchedEffect(currentItem?.providerId, currentItem?.mediaId, isVisible, activeTabId) {
+                val item = currentItem ?: return@LaunchedEffect
+                if (!isVisible) return@LaunchedEffect
+                val key = "${item.providerId}:${item.mediaId}"
+                if (pagerState.currentPage >= items.size - 4) {
+                    onIntent(MainIntent.LoadMoreForYou)
+                }
+                activePlayingKey = ""
+                isPaused = false
+                exoPlayer.stop()
+
+                val provider = ProviderRegistry.get(item.providerId)
+                val eps = runCatching { provider.getEpisodes(item.mediaId).episodes }.getOrDefault(emptyList())
+                val firstEp = eps.firstOrNull { !it.isLocked } ?: return@LaunchedEffect
+                val src = runCatching { provider.resolvePlayback(item.mediaId, firstEp.episodeId) }.getOrNull()
+                    ?: return@LaunchedEffect
+                if (src.streamUrl.isNotBlank() && isVisible) {
+                    val dsFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(src.headers)
+                    val mediaSource = DefaultMediaSourceFactory(dsFactory)
+                        .createMediaSource(ExoMediaItem.fromUri(src.streamUrl))
+                    exoPlayer.setMediaSource(mediaSource)
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = true
+                    activePlayingKey = key
+                }
+            }
+
+            VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { idx ->
+                val item = items[idx]
+                val isCurrent = idx == pagerState.currentPage && activePlayingKey == "${item.providerId}:${item.mediaId}"
+                val isSaved = favorites.any { it.providerId == item.providerId && it.mediaId == item.mediaId }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                        .clickable {
+                            if (isCurrent) {
+                                isPaused = !isPaused
+                                exoPlayer.playWhenReady = !isPaused
+                            }
+                        }
                 ) {
-                    Icon(
-                        imageVector = if (isSaved) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
-                        contentDescription = "Koleksi",
-                        tint = if (isSaved) AccentGold else Color.White,
-                        modifier = Modifier.size(30.dp)
+                    if (item.coverUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = item.coverUrl,
+                            contentDescription = item.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    if (isCurrent) {
+                        AndroidView(
+                            factory = { ctx ->
+                                PlayerView(ctx).apply {
+                                    useController = false
+                                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                    player = exoPlayer
+                                }
+                            },
+                            update = { it.player = exoPlayer },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    // Gradient overlay bawah
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(220.dp)
+                            .align(Alignment.BottomCenter)
+                            .background(
+                                Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC0A0B0F), BgDark))
+                            )
                     )
-                    Text(
-                        text = if (isSaved) "Tersimpan" else "Koleksi",
-                        color = Color.White,
-                        fontSize = 11.sp
-                    )
+
+                    // Info detail konten & tombol tonton di kiri bawah
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 16.dp, end = 84.dp, bottom = 24.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = ProviderRegistry.get(item.providerId).displayName,
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(AccentRed.copy(alpha = 0.85f))
+                                    .padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
+                            if (!item.badge.isNullOrBlank()) {
+                                Text(
+                                    text = item.badge!!,
+                                    color = Color.Black,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(AccentGold)
+                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                            if (item.totalEpisodes > 0) {
+                                Text(
+                                    text = "${item.totalEpisodes} Ep",
+                                    color = TextPrimary,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0x88000000))
+                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(item.title, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                        if (item.tags.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(item.tags.joinToString(" • "), color = AccentGold, fontSize = 12.sp, maxLines = 1)
+                        }
+                        if (item.description.isNotBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = item.description,
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Cuplikan Episode 1 • Tap untuk jeda/lanjut",
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                exoPlayer.pause()
+                                onOpenPlayer(item)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentRed)
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Tonton Lengkap (${item.totalEpisodes} Ep)")
+                        }
+                    }
+
+                    // Aksi Koleksi di kanan bawah
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 14.dp, bottom = 28.dp)
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable { onIntent(MainIntent.ToggleFavorite(item)) }
+                        ) {
+                            Icon(
+                                imageVector = if (isSaved) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
+                                contentDescription = "Koleksi",
+                                tint = if (isSaved) AccentGold else Color.White,
+                                modifier = Modifier.size(30.dp)
+                            )
+                            Text(
+                                text = if (isSaved) "Tersimpan" else "Koleksi",
+                                color = Color.White,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2 Pilihan Tab di Tengah Atas (mis. Untukmu | Anime)
+        if (tabs.size > 1) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 12.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0x66000000))
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+            ) {
+                tabs.forEach { t ->
+                    val selected = t.id == activeTabId
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable { onIntent(MainIntent.SelectForYouTab(t.id)) }
+                    ) {
+                        Text(
+                            text = t.title,
+                            color = if (selected) Color.White else TextSecondary,
+                            fontSize = 14.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                        )
+                        if (selected) {
+                            Spacer(Modifier.height(2.dp))
+                            Box(
+                                modifier = Modifier
+                                    .width(18.dp)
+                                    .height(2.5.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(AccentRed)
+                            )
+                        }
+                    }
                 }
             }
         }

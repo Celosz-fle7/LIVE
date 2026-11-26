@@ -100,8 +100,16 @@ class FreeReelsProvider : DramaProvider {
         )
     }
 
-    override suspend fun getForYouFeed(cursor: String): FeedPage = withContext(Dispatchers.IO) {
+    override suspend fun getForYouTabs(): List<TabSpec> = listOf(
+        TabSpec("foryou", "Untukmu", isDefault = true),
+        TabSpec("547", "Anime")
+    )
+
+    override suspend fun getForYouFeed(tabId: String, cursor: String): FeedPage = withContext(Dispatchers.IO) {
         ensureAuth()
+        if (tabId == "547") {
+            return@withContext getFeed(tabId = "547", cursor = cursor)
+        }
         val page = cursor.toIntOrNull()?.coerceAtLeast(1) ?: 1
         if (page == 1) {
             val json = execGet("/foryou/feed")
