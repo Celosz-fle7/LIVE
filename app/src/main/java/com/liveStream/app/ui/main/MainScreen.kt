@@ -53,6 +53,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -101,6 +103,7 @@ import androidx.media3.ui.PlayerView
 import android.app.Activity
 import coil.compose.AsyncImage
 import com.liveStream.app.BuildConfig
+import com.liveStream.app.core.InMemoryMediaStore
 import com.liveStream.app.core.NativeCore
 import com.liveStream.app.core.updater.AppUpdater
 import com.liveStream.app.core.updater.UpdateInfo
@@ -120,7 +123,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
-    onOpenPlayer: (MediaItem) -> Unit
+    onOpenPlayer: (MediaItem, Long) -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -210,7 +213,7 @@ fun MainScreen(
                             state = state,
                             onIntent = viewModel::onIntent,
                             onOpenDrawer = { scope.launch { drawerState.open() } },
-                            onOpenPlayer = onOpenPlayer
+                            onOpenPlayer = { onOpenPlayer(it, 0L) }
                         )
                         BottomNavTab.FOR_YOU -> ForYouPagerPage(
                             tabs = state.forYouTabs,
@@ -223,7 +226,7 @@ fun MainScreen(
                             onIntent = viewModel::onIntent,
                             onOpenPlayer = onOpenPlayer
                         )
-                        BottomNavTab.MY_LIST -> FavoritesPage(state.favorites, onOpenPlayer)
+                        BottomNavTab.MY_LIST -> FavoritesPage(state.favorites) { onOpenPlayer(it, 0L) }
                         BottomNavTab.PROFILE -> ProfilePage(
                             state = state,
                             statusText = updateStatusText,
@@ -621,7 +624,7 @@ private fun ForYouPagerPage(
     isVisible: Boolean,
     isLoading: Boolean,
     onIntent: (MainIntent) -> Unit,
-    onOpenPlayer: (MediaItem) -> Unit
+    onOpenPlayer: (MediaItem, Long) -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         if (items.isEmpty()) {
@@ -634,18 +637,44 @@ private fun ForYouPagerPage(
             }
         } else {
             val context = LocalContext.current
+            val scope = rememberCoroutineScope()
             val safeInitial = initialPage.coerceIn(0, (items.size - 1).coerceAtLeast(0))
             val pagerState = rememberPagerState(initialPage = safeInitial, pageCount = { items.size })
             val exoPlayer = remember {
                 ExoPlayer.Builder(context).build().apply {
-                    repeatMode = Player.REPEAT_MODE_ONE
+                    repeatMode = Player.REPEAT_MODE_OFF
                 }
             }
             var activePlayingKey by remember { mutableStateOf("") }
             var isPaused by remember { mutableStateOf(false) }
+            var currentPosMs by remember { mutableStateOf(0L) }
+            var durationMs by remember { mutableStateOf(0L) }
+            var playbackSpeed by remember { mutableStateOf(1.0f) }
 
-            DisposableEffect(Unit) {
-                onDispose { exoPlayer.release() }
+            DisposableEffect(exoPlayer) {
+                val listener = object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_ENDED && isVisible) {
+                            val next = pagerState.currentPage + 1
+                            if (next < items.size) {
+                                scope.launch { pagerState.animateScrollToPage(next) }
+                            }
+                        }
+                    }
+                }
+                exoPlayer.addListener(listener)
+                onDispose {
+                    exoPlayer.removeListener(listener)
+                    exoPlayer.release()
+                }
+            }
+
+            LaunchedEffect(activePlayingKey, isVisible) {
+                while (isVisible && activePlayingKey.isNotEmpty()) {
+                    currentPosMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    durationMs = exoPlayer.duration.takeIf { it > 0L } ?: 0L
+                    kotlinx.coroutines.delay(300L)
+                }
             }
 
             LaunchedEffect(pagerState.currentPage) {
@@ -671,6 +700,8 @@ private fun ForYouPagerPage(
                 }
                 activePlayingKey = ""
                 isPaused = false
+                currentPosMs = 0L
+                durationMs = 0L
                 exoPlayer.stop()
 
                 val provider = ProviderRegistry.get(item.providerId)
@@ -679,10 +710,11 @@ private fun ForYouPagerPage(
                 val src = runCatching { provider.resolvePlayback(item.mediaId, firstEp.episodeId) }.getOrNull()
                     ?: return@LaunchedEffect
                 if (src.streamUrl.isNotBlank() && isVisible) {
-                    val dsFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(src.headers)
+                    val dsFactory = InMemoryMediaStore.createDataSourceFactory(src.headers)
                     val mediaSource = DefaultMediaSourceFactory(dsFactory)
                         .createMediaSource(ExoMediaItem.fromUri(src.streamUrl))
                     exoPlayer.setMediaSource(mediaSource)
+                    exoPlayer.setPlaybackSpeed(playbackSpeed)
                     exoPlayer.prepare()
                     exoPlayer.playWhenReady = true
                     activePlayingKey = key
@@ -806,11 +838,66 @@ private fun ForYouPagerPage(
                                 fontSize = 11.sp
                             )
                         }
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(8.dp))
+                        // Garis detik + kecepatan video cuplikan
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = formatDurationMs(currentPosMs),
+                                color = TextPrimary,
+                                fontSize = 11.sp
+                            )
+                            Slider(
+                                value = if (durationMs > 0L) (currentPosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f,
+                                onValueChange = { frac ->
+                                    if (durationMs > 0L) {
+                                        val target = (frac * durationMs).toLong()
+                                        currentPosMs = target
+                                        exoPlayer.seekTo(target)
+                                    }
+                                },
+                                colors = SliderDefaults.colors(
+                                    thumbColor = AccentRed,
+                                    activeTrackColor = AccentRed,
+                                    inactiveTrackColor = Color(0x55FFFFFF)
+                                ),
+                                modifier = Modifier.weight(1f).padding(horizontal = 6.dp)
+                            )
+                            Text(
+                                text = formatDurationMs(durationMs),
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "${playbackSpeed}x",
+                                color = AccentGold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0x88000000))
+                                    .clickable {
+                                        val nextSpeed = when (playbackSpeed) {
+                                            1.0f -> 1.25f
+                                            1.25f -> 1.5f
+                                            1.5f -> 2.0f
+                                            else -> 1.0f
+                                        }
+                                        playbackSpeed = nextSpeed
+                                        exoPlayer.setPlaybackSpeed(nextSpeed)
+                                    }
+                                    .padding(horizontal = 7.dp, vertical = 3.dp)
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
                         Button(
                             onClick = {
+                                val resumeMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                                 exoPlayer.pause()
-                                onOpenPlayer(item)
+                                onOpenPlayer(item, resumeMs)
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AccentRed)
                         ) {
@@ -889,6 +976,13 @@ private fun ForYouPagerPage(
             }
         }
     }
+}
+
+private fun formatDurationMs(ms: Long): String {
+    val totalSec = (ms / 1000L).coerceAtLeast(0L)
+    val min = totalSec / 60L
+    val sec = totalSec % 60L
+    return "%02d:%02d".format(min, sec)
 }
 
 @Composable

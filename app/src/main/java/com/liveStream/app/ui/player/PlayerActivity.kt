@@ -35,6 +35,9 @@ import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.FormatListNumbered
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,6 +46,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -94,6 +99,7 @@ class PlayerActivity : ComponentActivity() {
         val providerId = intent.getStringExtra("EXTRA_PROVIDER_ID").orEmpty()
         val mediaId = intent.getStringExtra("EXTRA_MEDIA_ID").orEmpty()
         val title = intent.getStringExtra("EXTRA_TITLE").orEmpty()
+        val startPositionMs = intent.getLongExtra("EXTRA_START_POSITION_MS", 0L).coerceAtLeast(0L)
 
         setContent {
             LiveStreamTheme {
@@ -101,6 +107,7 @@ class PlayerActivity : ComponentActivity() {
                     providerId = providerId,
                     mediaId = mediaId,
                     title = title,
+                    initialStartPosMs = startPositionMs,
                     onBack = { finish() }
                 )
             }
@@ -115,6 +122,7 @@ private fun FullScreenVerticalPlayer(
     providerId: String,
     mediaId: String,
     title: String,
+    initialStartPosMs: Long,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -139,6 +147,13 @@ private fun FullScreenVerticalPlayer(
     var showAudioSheet by remember { mutableStateOf(false) }
     var showQualitySheet by remember { mutableStateOf(false) }
 
+    // Mode Bersih: default kontrol tersembunyi, tap layar untuk memunculkan/menyembunyikan
+    var showControls by remember { mutableStateOf(false) }
+    var currentPosMs by remember { mutableStateOf(0L) }
+    var durationMs by remember { mutableStateOf(0L) }
+    var playbackSpeed by remember { mutableStateOf(1.0f) }
+    var pendingStartPosMs by remember { mutableStateOf(initialStartPosMs) }
+
     val exoPlayer = remember {
         ExoPlayer.Builder(context).apply {
             // Default prioritas bahasa Indonesia untuk Audio & Subtitle
@@ -148,6 +163,14 @@ private fun FullScreenVerticalPlayer(
                 .setPreferredAudioLanguage("id")
                 .setPreferredTextLanguage("id")
                 .build()
+        }
+    }
+
+    LaunchedEffect(activePlayingEpIndex) {
+        while (activePlayingEpIndex >= 0) {
+            currentPosMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            durationMs = exoPlayer.duration.takeIf { it > 0L } ?: 0L
+            kotlinx.coroutines.delay(300L)
         }
     }
 
@@ -238,10 +261,27 @@ private fun FullScreenVerticalPlayer(
     val currentEpIndex = pagerState.currentPage
     val currentEp = episodes[currentEpIndex]
 
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    val next = pagerState.currentPage + 1
+                    if (next < episodes.size) {
+                        scope.launch { pagerState.animateScrollToPage(next) }
+                    }
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose { exoPlayer.removeListener(listener) }
+    }
+
     LaunchedEffect(currentEpIndex) {
         activePlayingEpIndex = -1
         isPaused = false
         streamError = null
+        currentPosMs = 0L
+        durationMs = 0L
         exoPlayer.stop()
         if (currentEp.isLocked) {
             playback = PlaybackSource("")
@@ -282,7 +322,12 @@ private fun FullScreenVerticalPlayer(
                 .setSubtitleConfigurations(subs)
                 .build()
             exoPlayer.setMediaSource(DefaultMediaSourceFactory(dsFactory).createMediaSource(item))
+            exoPlayer.setPlaybackSpeed(playbackSpeed)
             exoPlayer.prepare()
+            if (currentEpIndex == 0 && pendingStartPosMs > 0L) {
+                exoPlayer.seekTo(pendingStartPosMs)
+                pendingStartPosMs = 0L
+            }
             applyTrackPreferences(selectedSubLang, selectedAudioLang)
             exoPlayer.playWhenReady = true
             activePlayingEpIndex = currentEpIndex
@@ -298,10 +343,7 @@ private fun FullScreenVerticalPlayer(
                     .fillMaxSize()
                     .background(Color.Black)
                     .clickable {
-                        if (isCurrent) {
-                            isPaused = !isPaused
-                            exoPlayer.playWhenReady = !isPaused
-                        }
+                        showControls = !showControls
                     },
                 contentAlignment = Alignment.Center
             ) {
@@ -338,83 +380,169 @@ private fun FullScreenVerticalPlayer(
             }
         }
 
-        // Top Bar
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp)
-                .align(Alignment.TopStart)
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Kembali", tint = Color.White)
+        if (showControls) {
+            // Top Bar
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .align(Alignment.TopStart)
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Kembali", tint = Color.White)
+                }
+                Column {
+                    Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text("${provider.displayName} • Episode ${currentEp.number}/${episodes.size}", color = TextSecondary, fontSize = 12.sp)
+                }
             }
-            Column {
-                Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                Text("${provider.displayName} • Episode ${currentEp.number}/${episodes.size}", color = TextSecondary, fontSize = 12.sp)
+
+            // Bottom gradient + info + garis detik + next episode
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(210.dp)
+                    .align(Alignment.BottomCenter)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC0A0B0F), BgDark)))
+            )
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .navigationBarsPadding()
+                    .padding(start = 16.dp, end = 86.dp, bottom = 16.dp)
+            ) {
+                Text(currentEp.title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    IconButton(
+                        onClick = {
+                            isPaused = !isPaused
+                            exoPlayer.playWhenReady = !isPaused
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                            contentDescription = "Jeda/Putar",
+                            tint = Color.White
+                        )
+                    }
+                    Text(
+                        text = formatPlayerTime(currentPosMs),
+                        color = TextPrimary,
+                        fontSize = 11.sp
+                    )
+                    Slider(
+                        value = if (durationMs > 0L) (currentPosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f,
+                        onValueChange = { frac ->
+                            if (durationMs > 0L) {
+                                val target = (frac * durationMs).toLong()
+                                currentPosMs = target
+                                exoPlayer.seekTo(target)
+                            }
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = AccentRed,
+                            activeTrackColor = AccentRed,
+                            inactiveTrackColor = Color(0x55FFFFFF)
+                        ),
+                        modifier = Modifier.weight(1f).padding(horizontal = 6.dp)
+                    )
+                    Text(
+                        text = formatPlayerTime(durationMs),
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "${playbackSpeed}x",
+                        color = AccentGold,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0x88000000))
+                            .clickable {
+                                val nextSpeed = when (playbackSpeed) {
+                                    1.0f -> 1.25f
+                                    1.25f -> 1.5f
+                                    1.5f -> 2.0f
+                                    else -> 1.0f
+                                }
+                                playbackSpeed = nextSpeed
+                                exoPlayer.setPlaybackSpeed(nextSpeed)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                    if (currentEpIndex + 1 < episodes.size) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(AccentRed.copy(alpha = 0.85f))
+                                .clickable {
+                                    scope.launch { pagerState.animateScrollToPage(currentEpIndex + 1) }
+                                }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Rounded.SkipNext, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Next Ep", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
             }
-        }
 
-        // Bottom gradient + info
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(170.dp)
-                .align(Alignment.BottomCenter)
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC0A0B0F), BgDark)))
-        )
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .navigationBarsPadding()
-                .padding(start = 16.dp, end = 86.dp, bottom = 20.dp)
-        ) {
-            Text(currentEp.title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(4.dp))
-            Text("Geser atas/bawah untuk pindah episode", color = TextSecondary, fontSize = 11.sp)
-        }
-
-        // Right Action Rail (Episode, Kualitas, Subtitle, Audio, Layar)
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(end = 14.dp, bottom = 24.dp)
-        ) {
-            ActionIcon(
-                icon = Icons.Rounded.FormatListNumbered,
-                label = "Ep ${currentEp.number}",
-                tint = Color.White,
-                onClick = { showEpisodeSheet = true }
-            )
-            ActionIcon(
-                icon = Icons.Rounded.HighQuality,
-                label = selectedQuality,
-                tint = Color.White,
-                onClick = { showQualitySheet = true }
-            )
-            ActionIcon(
-                icon = Icons.Rounded.Subtitles,
-                label = if (selectedSubLang == "off") "Sub Off" else selectedSubLang.uppercase(),
-                tint = if (selectedSubLang == "off") TextSecondary else AccentGold,
-                onClick = { showSubtitleSheet = true }
-            )
-            ActionIcon(
-                icon = Icons.Rounded.GraphicEq,
-                label = selectedAudioLang.uppercase(),
-                tint = AccentRed,
-                onClick = { showAudioSheet = true }
-            )
-            ActionIcon(
-                icon = Icons.Rounded.AspectRatio,
-                label = if (isFullZoom) "Full" else "Fit",
-                tint = Color.White,
-                onClick = { isFullZoom = !isFullZoom }
-            )
+            // Right Action Rail (Episode, Kualitas, Subtitle, Audio, Layar)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(end = 14.dp, bottom = 24.dp)
+            ) {
+                ActionIcon(
+                    icon = Icons.Rounded.FormatListNumbered,
+                    label = "Ep ${currentEp.number}",
+                    tint = Color.White,
+                    onClick = { showEpisodeSheet = true }
+                )
+                ActionIcon(
+                    icon = Icons.Rounded.HighQuality,
+                    label = selectedQuality,
+                    tint = Color.White,
+                    onClick = { showQualitySheet = true }
+                )
+                ActionIcon(
+                    icon = Icons.Rounded.Subtitles,
+                    label = if (selectedSubLang == "off") "Sub Off" else selectedSubLang.uppercase(),
+                    tint = if (selectedSubLang == "off") TextSecondary else AccentGold,
+                    onClick = { showSubtitleSheet = true }
+                )
+                ActionIcon(
+                    icon = Icons.Rounded.GraphicEq,
+                    label = selectedAudioLang.uppercase(),
+                    tint = AccentRed,
+                    onClick = { showAudioSheet = true }
+                )
+                ActionIcon(
+                    icon = Icons.Rounded.AspectRatio,
+                    label = if (isFullZoom) "Full" else "Fit",
+                    tint = Color.White,
+                    onClick = { isFullZoom = !isFullZoom }
+                )
+            }
         }
     }
 
@@ -569,6 +697,13 @@ private fun FullScreenVerticalPlayer(
             }
         }
     }
+}
+
+private fun formatPlayerTime(ms: Long): String {
+    val totalSec = (ms / 1000L).coerceAtLeast(0L)
+    val min = totalSec / 60L
+    val sec = totalSec % 60L
+    return "%02d:%02d".format(min, sec)
 }
 
 @Composable
