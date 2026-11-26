@@ -1,5 +1,6 @@
 package com.liveStream.app.provider
 
+import com.liveStream.app.provider.freereels.FreeReelsProvider
 import com.liveStream.app.provider.pinedrama.PineDramaProvider
 import com.liveStream.contract.DramaProvider
 
@@ -10,6 +11,7 @@ import com.liveStream.contract.DramaProvider
 object ProviderRegistry {
     private val providers: List<DramaProvider> = listOf(
         PineDramaProvider(),
+        FreeReelsProvider(),
         FakeProvider()
     )
 
