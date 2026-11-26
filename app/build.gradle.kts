@@ -11,8 +11,8 @@ android {
         applicationId = "com.liveStream.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 15
-        versionName = "0.15.0"
+        versionCode = 16
+        versionName = "0.16.0"
 
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")

@@ -1,6 +1,7 @@
 package com.liveStream.app.provider.melolo
 
 import android.util.Base64
+import android.util.Log
 import com.liveStream.contract.AudioTrack
 import com.liveStream.contract.DramaProvider
 import com.liveStream.contract.EpisodeItem
@@ -178,6 +179,7 @@ class MeloloProvider : DramaProvider {
             }
             val json = execPostForm("/novel/player/video_model/v1/", commonParams, bodyStr)
             val code = json.optInt("code", json.optJSONObject("BaseResp")?.optInt("StatusCode", -1) ?: -1)
+            Log.d("MeloloProvider", "video_model media=$mediaId ep=$episodeId code=$code msg=${json.optString("message")}")
             if (code != 0) {
                 return@withContext PlaybackSource(streamUrl = "")
             }
