@@ -1,5 +1,6 @@
 package com.liveStream.app.provider
 
+import com.liveStream.app.provider.pinedrama.PineDramaProvider
 import com.liveStream.contract.DramaProvider
 
 /**
@@ -8,8 +9,8 @@ import com.liveStream.contract.DramaProvider
  */
 object ProviderRegistry {
     private val providers: List<DramaProvider> = listOf(
+        PineDramaProvider(),
         FakeProvider()
-        // Colok provider baru di sini, misal: PineDramaProvider()
     )
 
     fun all(): List<DramaProvider> = providers
