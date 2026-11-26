@@ -41,6 +41,7 @@ class DramaBoxProvider : DramaProvider {
         "https://sapih3.dramaboxdb.com/drama-box"
     )
     private var activeHostIdx = 0
+    private var lastServerError: String? = null
 
     private val deviceId: String = UUID.randomUUID().toString()
     private val androidId: String = UUID.randomUUID().toString().replace("-", "")
@@ -106,6 +107,9 @@ class DramaBoxProvider : DramaProvider {
         }
 
         val items = raw.mapNotNull(::mapMediaItem).distinctBy { it.mediaId }
+        if (items.isEmpty() && lastServerError != null) {
+            throw IllegalStateException(lastServerError)
+        }
         FeedPage(
             items = items,
             nextCursor = (page + 1).toString(),
@@ -129,6 +133,9 @@ class DramaBoxProvider : DramaProvider {
             else collectChannel(pageNo = page, out = raw)
         }
         val items = raw.mapNotNull(::mapMediaItem).distinctBy { it.mediaId }
+        if (items.isEmpty() && lastServerError != null) {
+            throw IllegalStateException(lastServerError)
+        }
         FeedPage(
             items = items,
             nextCursor = (page + 1).toString(),
@@ -159,6 +166,9 @@ class DramaBoxProvider : DramaProvider {
         val raw = mutableListOf<JSONObject>()
         collectArray(execPost("/search/suggest", JSONObject().put("keyword", query)), "suggestList", raw)
         val items = raw.mapNotNull(::mapMediaItem).distinctBy { it.mediaId }
+        if (items.isEmpty() && lastServerError != null) {
+            throw IllegalStateException(lastServerError)
+        }
         FeedPage(items = items, nextCursor = "", hasMore = false)
     }
 
@@ -403,7 +413,11 @@ class DramaBoxProvider : DramaProvider {
                 val json = runCatching { JSONObject(txt) }.getOrElse { JSONObject() }
                 val stCode = json.optInt("status", -1)
                 if (resp.code != 200 || stCode != 0) {
-                    Log.d("DramaBoxProvider", "POST $path HTTP=${resp.code} status=$stCode msg=${json.optString("message")}")
+                    val err = "DramaBox HTTP=${resp.code} status=$stCode ${json.optString("message")}"
+                    lastServerError = err
+                    Log.d("DramaBoxProvider", "POST $path $err")
+                } else {
+                    lastServerError = null
                 }
                 json
             }

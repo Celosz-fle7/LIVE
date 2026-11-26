@@ -32,8 +32,9 @@ class MeloloProvider : DramaProvider {
         "https://play-lh.googleusercontent.com/HEkeCbNIuDdTlBr_2vuey1BeBTc-0O_RwemiQ80eWKGJFyJrq83Kk-34wOK_jqyXJ_XBP7eh3eoGg2nBbZd0eQ=w240-h480"
 
     private val baseUrl = "https://api22-normal-mya.tmtreader.com"
+    private val fallbackBaseUrl = "https://api.tmtreader.com"
     private val userAgent =
-        "com.worldance.drama/55520 (Linux; U; Android 16; id_ID; Infinix X6870; Build/UP1A.231005.007; Cronet/TTNetVersion:5303bf90)"
+        "com.worldance.drama/55219 (Linux; U; Android 16; id; Infinix X6870; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:57545f6e 2025-08-04 QuicVersion:ccae1727 2025-07-24)"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -43,10 +44,10 @@ class MeloloProvider : DramaProvider {
     private val commonParams = mapOf(
         "aid" to "645713",
         "device_id" to "7514640337227908615",
-        "iid" to "7712508844723128069",
+        "iid" to "7706992491207231285",
         "app_name" to "Melolo",
-        "version_code" to "55520",
-        "version_name" to "5.5.5",
+        "version_code" to "55219",
+        "version_name" to "5.5.2",
         "device_platform" to "android",
         "os" to "android",
         "ssmix" to "a",
@@ -56,10 +57,10 @@ class MeloloProvider : DramaProvider {
         "os_api" to "36",
         "os_version" to "16",
         "openudid" to "83a70344deb08242",
-        "manifest_version_code" to "55520",
+        "manifest_version_code" to "55219",
         "resolution" to "1080*2260",
         "dpi" to "351",
-        "update_version_code" to "55520",
+        "update_version_code" to "55219",
         "current_region" to "ID",
         "carrier_region" to "id",
         "app_language" to "id",
@@ -71,6 +72,8 @@ class MeloloProvider : DramaProvider {
         "user_language" to "id",
         "time_zone" to "Asia/Jakarta",
         "ui_language" to "id",
+        "cdid" to "bddd0ca1-df26-4f6b-a376-35deff350397",
+        "clientudid" to "50873462-4fbd-4e38-9ae3-6e9dea879bf9",
         "channel" to "gp",
         "ac" to "wifi"
     )
@@ -177,9 +180,14 @@ class MeloloProvider : DramaProvider {
             val bodyStr = payloadMap.entries.joinToString("&") { (k, v) ->
                 "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
             }
-            val json = execPostForm("/novel/player/video_model/v1/", commonParams, bodyStr)
-            val code = json.optInt("code", json.optJSONObject("BaseResp")?.optInt("StatusCode", -1) ?: -1)
-            Log.d("MeloloProvider", "video_model media=$mediaId ep=$episodeId code=$code msg=${json.optString("message")}")
+            var json = execPostForm("/novel/player/video_model/v1/", commonParams, bodyStr)
+            var code = json.optInt("code", json.optJSONObject("BaseResp")?.optInt("StatusCode", -1) ?: -1)
+            Log.d("MeloloProvider", "video_model(primary) media=$mediaId ep=$episodeId code=$code msg=${json.optString("message")}")
+            if (code != 0) {
+                json = execPostForm("/novel/player/video_model/v1/", commonParams, bodyStr, hostOverride = fallbackBaseUrl)
+                code = json.optInt("code", json.optJSONObject("BaseResp")?.optInt("StatusCode", -1) ?: -1)
+                Log.d("MeloloProvider", "video_model(fallback) media=$mediaId ep=$episodeId code=$code msg=${json.optString("message")}")
+            }
             if (code != 0) {
                 return@withContext PlaybackSource(streamUrl = "")
             }
@@ -324,8 +332,13 @@ class MeloloProvider : DramaProvider {
         }
     }
 
-    private fun execPostForm(path: String, params: Map<String, String>, formBody: String): JSONObject {
-        val url = buildUrl(path, params)
+    private fun execPostForm(
+        path: String,
+        params: Map<String, String>,
+        formBody: String,
+        hostOverride: String? = null
+    ): JSONObject {
+        val url = buildUrl(path, params, hostOverride)
         val sig = MeloloSigner.signFromRaw(params = params, postBody = formBody)
         val mediaType = "application/x-www-form-urlencoded; charset=UTF-8".toMediaType()
         val reqBuilder = Request.Builder()
@@ -340,8 +353,9 @@ class MeloloProvider : DramaProvider {
         }
     }
 
-    private fun buildUrl(path: String, params: Map<String, String>): String {
-        val b = "$baseUrl$path".toHttpUrl().newBuilder()
+    private fun buildUrl(path: String, params: Map<String, String>, hostOverride: String? = null): String {
+        val host = hostOverride ?: baseUrl
+        val b = "$host$path".toHttpUrl().newBuilder()
         params.forEach { (k, v) -> b.addQueryParameter(k, v) }
         return b.build().toString()
     }
