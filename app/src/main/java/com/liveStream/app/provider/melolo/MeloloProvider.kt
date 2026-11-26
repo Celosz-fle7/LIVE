@@ -6,6 +6,9 @@ import com.liveStream.contract.DramaProvider
 import com.liveStream.contract.EpisodeItem
 import com.liveStream.contract.EpisodePage
 import com.liveStream.contract.FeedPage
+import com.liveStream.contract.FilterLadder
+import com.liveStream.contract.FilterOption
+import com.liveStream.contract.FilterSelection
 import com.liveStream.contract.MediaItem
 import com.liveStream.contract.PlaybackSource
 import com.liveStream.contract.TabSpec
@@ -92,6 +95,28 @@ class MeloloProvider : DramaProvider {
 
     override suspend fun getForYouFeed(cursor: String): FeedPage = getFeed(tabId = "Populer", cursor = cursor)
 
+    override suspend fun getFilterLadders(): List<FilterLadder> = listOf(
+        FilterLadder(
+            id = "genre",
+            title = "Genre & Tema",
+            options = listOf(
+                FilterOption("0", "Semua", 1),
+                FilterOption("Dubbing", "Sulih Suara (Dubbing)", 2),
+                FilterOption("Romansa", "Romansa", 2),
+                FilterOption("Balas Dendam", "Balas Dendam", 2),
+                FilterOption("Fantasi", "Fantasi", 2),
+                FilterOption("CEO", "CEO", 2),
+                FilterOption("Aksi", "Aksi", 2),
+                FilterOption("Anime", "Anime", 2)
+            )
+        )
+    )
+
+    override suspend fun getFilteredFeed(filters: List<FilterSelection>, cursor: String): FeedPage {
+        val selected = filters.firstOrNull()?.optionId?.takeIf { it != "0" } ?: "Populer"
+        return getFeed(tabId = selected, cursor = cursor)
+    }
+
     override suspend fun search(query: String, cursor: String): FeedPage = withContext(Dispatchers.IO) {
         val offset = cursor.toIntOrNull()?.coerceAtLeast(0) ?: 0
         val params = commonParams + mapOf(
@@ -102,8 +127,6 @@ class MeloloProvider : DramaProvider {
         val json = execGet("/i18n_novel/search/page/v1/", params)
         parseSearchPage(json, offset)
     }
-
-    override suspend fun getForYouFeed(cursor: String): FeedPage = getFeed(tabId = "Populer", cursor = cursor)
 
     override suspend fun getEpisodes(mediaId: String, cursor: String): EpisodePage = withContext(Dispatchers.IO) {
         val params = commonParams + mapOf("series_id" to mediaId)
@@ -152,8 +175,11 @@ class MeloloProvider : DramaProvider {
 
             val data = json.optJSONObject("data") ?: return@withContext PlaybackSource(streamUrl = "")
             var rawVm = data.opt("video_model") ?: data.opt("videoModel") ?: data.opt("vodVideoRef")
-            if (rawVm is String && rawVm.isNotEmpty()) {
-                rawVm = runCatching { JSONObject(rawVm) }.getOrNull()
+            if (rawVm is String) {
+                val vmStr = rawVm
+                if (vmStr.isNotEmpty()) {
+                    rawVm = runCatching { JSONObject(vmStr) }.getOrNull()
+                }
             }
             val vm = rawVm as? JSONObject ?: return@withContext PlaybackSource(streamUrl = "")
             val vod = vm.optJSONObject("vodVideoRef") ?: vm

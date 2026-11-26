@@ -5,6 +5,9 @@ import com.liveStream.contract.DramaProvider
 import com.liveStream.contract.EpisodeItem
 import com.liveStream.contract.EpisodePage
 import com.liveStream.contract.FeedPage
+import com.liveStream.contract.FilterLadder
+import com.liveStream.contract.FilterOption
+import com.liveStream.contract.FilterSelection
 import com.liveStream.contract.MediaItem
 import com.liveStream.contract.PlaybackSource
 import com.liveStream.contract.SubtitleTrack
@@ -103,6 +106,27 @@ class FreeReelsProvider : DramaProvider {
         val arr = json.optJSONObject("data")?.optJSONArray("items") ?: JSONArray()
         val items = parseDramaArray(arr)
         FeedPage(items = items, nextCursor = "next", hasMore = items.isNotEmpty())
+    }
+
+    override suspend fun getFilterLadders(): List<FilterLadder> = listOf(
+        FilterLadder(
+            id = "kategori",
+            title = "Kategori & Genre",
+            options = listOf(
+                FilterOption("0", "Semua", 1),
+                FilterOption("516", "Sulih Suara (Dubbing)", 2),
+                FilterOption("504", "Romansa (Wanita)", 2),
+                FilterOption("506", "Aksi & Urban (Pria)", 2),
+                FilterOption("547", "Anime", 2),
+                FilterOption("505", "Rilis Terbaru", 2),
+                FilterOption("597", "Teater Lengkap", 2)
+            )
+        )
+    )
+
+    override suspend fun getFilteredFeed(filters: List<FilterSelection>, cursor: String): FeedPage {
+        val selected = filters.firstOrNull()?.optionId?.takeIf { it != "0" } ?: "503"
+        return getFeed(tabId = selected, cursor = cursor)
     }
 
     override suspend fun search(query: String, cursor: String): FeedPage = withContext(Dispatchers.IO) {
