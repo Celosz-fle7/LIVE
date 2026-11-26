@@ -23,7 +23,8 @@ enum class BottomNavTab(val label: String) {
 
 data class ProviderSummary(
     val id: String,
-    val displayName: String
+    val displayName: String,
+    val iconUrl: String = ""
 )
 
 data class MainUiState(
@@ -66,7 +67,7 @@ class MainViewModel : ViewModel() {
 
     init {
         val all = ProviderRegistry.all()
-        val summaries = all.map { ProviderSummary(it.id, it.displayName) }
+        val summaries = all.map { ProviderSummary(it.id, it.displayName, it.iconUrl) }
         val firstId = summaries.firstOrNull()?.id.orEmpty()
         _uiState.update { it.copy(providers = summaries, activeProviderId = firstId) }
         if (firstId.isNotEmpty()) {

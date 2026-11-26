@@ -26,6 +26,8 @@ import java.util.concurrent.TimeUnit
 class PineDramaProvider : DramaProvider {
     override val id: String = "pinedrama"
     override val displayName: String = "PineDrama"
+    override val iconUrl: String =
+        "https://play-lh.googleusercontent.com/pfc2SBr-JiF9y5d47tVq2hreXASR0MOZV2SA0CHk0GGyPpmf2e47GtkOJi3_pL9PDYVh1dG6vxqRFzpBOHzN=w240-h480"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)

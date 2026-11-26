@@ -35,8 +35,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.FilterList
+import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircle
@@ -45,16 +47,20 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -62,6 +68,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -93,6 +100,7 @@ import com.liveStream.app.ui.theme.TextPrimary
 import com.liveStream.app.ui.theme.TextSecondary
 import com.liveStream.contract.FilterSelection
 import com.liveStream.contract.MediaItem
+import kotlinx.coroutines.launch
 
 @Composable
 fun MainScreen(
@@ -101,6 +109,8 @@ fun MainScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var downloadProgress by remember { mutableIntStateOf(-1) }
     var updateStatusText by remember { mutableStateOf("") }
@@ -111,40 +121,100 @@ fun MainScreen(
         }
     }
 
-    Scaffold(
-        containerColor = BgDark,
-        bottomBar = {
-            DockedBottomBar(
-                activeTab = state.bottomTab,
-                onSelect = { viewModel.onIntent(MainIntent.SelectBottomTab(it)) }
-            )
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(bottom = innerPadding.calculateBottomPadding())
-        ) {
-            Crossfade(targetState = state.bottomTab, label = "MainTab") { tab ->
-                when (tab) {
-                    BottomNavTab.DISCOVER -> DiscoverPage(state, viewModel::onIntent, onOpenPlayer)
-                    BottomNavTab.FOR_YOU -> ForYouPagerPage(state.items, onOpenPlayer)
-                    BottomNavTab.MY_LIST -> FavoritesPage(state.favorites, onOpenPlayer)
-                    BottomNavTab.PROFILE -> ProfilePage(
-                        state = state,
-                        statusText = updateStatusText,
-                        onCheckUpdate = {
-                            updateStatusText = "Memeriksa pembaruan..."
-                            AppUpdater.checkForUpdate { info ->
-                                if (info != null) {
-                                    updateInfo = info
-                                    updateStatusText = "Versi v${info.versionName} tersedia"
-                                } else {
-                                    updateStatusText = "Sudah versi terbaru (v${BuildConfig.VERSION_NAME})"
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(
+                drawerContainerColor = SurfaceCard,
+                modifier = Modifier.width(280.dp)
+            ) {
+                Column(modifier = Modifier.fillMaxSize().statusBarsPadding().padding(16.dp)) {
+                    Text("Pilih Provider", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Kategori & katalog otomatis menyesuaikan", color = TextSecondary, fontSize = 12.sp)
+                    Spacer(Modifier.height(16.dp))
+                    state.providers.forEach { p ->
+                        val active = p.id == state.activeProviderId
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (active) SurfaceElevated else Color.Transparent)
+                                .border(
+                                    width = if (active) 1.dp else 0.dp,
+                                    color = if (active) AccentRed else Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable {
+                                    viewModel.onIntent(MainIntent.SelectProvider(p.id))
+                                    scope.launch { drawerState.close() }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            ProviderLogo(iconUrl = p.iconUrl, name = p.displayName, sizeDp = 34)
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = p.displayName,
+                                    color = if (active) TextPrimary else TextSecondary,
+                                    fontSize = 14.sp,
+                                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium
+                                )
+                                if (active) {
+                                    Text("Aktif", color = AccentRed, fontSize = 11.sp)
                                 }
                             }
+                            if (active) {
+                                Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = AccentRed, modifier = Modifier.size(18.dp))
+                            }
                         }
-                    )
+                    }
+                }
+            }
+        }
+    ) {
+        Scaffold(
+            containerColor = BgDark,
+            bottomBar = {
+                DockedBottomBar(
+                    activeTab = state.bottomTab,
+                    onSelect = { viewModel.onIntent(MainIntent.SelectBottomTab(it)) }
+                )
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = innerPadding.calculateBottomPadding())
+            ) {
+                Crossfade(targetState = state.bottomTab, label = "MainTab") { tab ->
+                    when (tab) {
+                        BottomNavTab.DISCOVER -> DiscoverPage(
+                            state = state,
+                            onIntent = viewModel::onIntent,
+                            onOpenDrawer = { scope.launch { drawerState.open() } },
+                            onOpenPlayer = onOpenPlayer
+                        )
+                        BottomNavTab.FOR_YOU -> ForYouPagerPage(state.items, onOpenPlayer)
+                        BottomNavTab.MY_LIST -> FavoritesPage(state.favorites, onOpenPlayer)
+                        BottomNavTab.PROFILE -> ProfilePage(
+                            state = state,
+                            statusText = updateStatusText,
+                            onCheckUpdate = {
+                                updateStatusText = "Memeriksa pembaruan..."
+                                AppUpdater.checkForUpdate { info ->
+                                    if (info != null) {
+                                        updateInfo = info
+                                        updateStatusText = "Versi v${info.versionName} tersedia"
+                                    } else {
+                                        updateStatusText = "Sudah versi terbaru (v${BuildConfig.VERSION_NAME})"
+                                    }
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -260,40 +330,80 @@ private fun DockedBottomBar(
 }
 
 @Composable
+private fun ProviderLogo(iconUrl: String, name: String, sizeDp: Int) {
+    if (iconUrl.isNotBlank()) {
+        AsyncImage(
+            model = iconUrl,
+            contentDescription = name,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(sizeDp.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(SurfaceElevated)
+        )
+    } else {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(sizeDp.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(AccentRed.copy(alpha = 0.2f))
+        ) {
+            Text(
+                text = name.take(1).uppercase(),
+                color = AccentRed,
+                fontWeight = FontWeight.Bold,
+                fontSize = (sizeDp / 2).sp
+            )
+        }
+    }
+}
+
+@Composable
 private fun DiscoverPage(
     state: MainUiState,
     onIntent: (MainIntent) -> Unit,
+    onOpenDrawer: () -> Unit,
     onOpenPlayer: (MediaItem) -> Unit
 ) {
+    val activeProvider = state.providers.firstOrNull { it.id == state.activeProviderId }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .padding(horizontal = 12.dp)
     ) {
-        Spacer(Modifier.height(8.dp))
-        // Bar pemilih Provider
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.providers, key = { it.id }) { p ->
-                val active = p.id == state.activeProviderId
-                Box(
+        Spacer(Modifier.height(6.dp))
+        // Header: Tombol Garis Tiga + Logo & Nama Provider Aktif
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            IconButton(onClick = onOpenDrawer) {
+                Icon(Icons.Rounded.Menu, contentDescription = "Menu Provider", tint = TextPrimary)
+            }
+            if (activeProvider != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(if (active) AccentRed else SurfaceElevated)
-                        .clickable { onIntent(MainIntent.SelectProvider(p.id)) }
-                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onOpenDrawer() }
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
                 ) {
+                    ProviderLogo(iconUrl = activeProvider.iconUrl, name = activeProvider.displayName, sizeDp = 26)
+                    Spacer(Modifier.width(8.dp))
                     Text(
-                        text = p.displayName,
-                        color = if (active) Color.White else TextSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
+                        text = activeProvider.displayName,
+                        color = TextPrimary,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
 
         // Search bar + Tombol Filter Bertingkat
         Row(

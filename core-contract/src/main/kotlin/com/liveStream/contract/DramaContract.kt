@@ -83,6 +83,7 @@ data class PlaybackSource(
 interface DramaProvider {
     val id: String
     val displayName: String
+    val iconUrl: String get() = ""
 
     suspend fun getTabs(): List<TabSpec>
     suspend fun getFeed(tabId: String, cursor: String = ""): FeedPage
