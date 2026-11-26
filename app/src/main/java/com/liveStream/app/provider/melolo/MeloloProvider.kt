@@ -27,7 +27,8 @@ import java.util.concurrent.TimeUnit
 class MeloloProvider : DramaProvider {
     override val id: String = "melolo"
     override val displayName: String = "Melolo"
-    override val iconUrl: String = ""
+    override val iconUrl: String =
+        "https://play-lh.googleusercontent.com/HEkeCbNIuDdTlBr_2vuey1BeBTc-0O_RwemiQ80eWKGJFyJrq83Kk-34wOK_jqyXJ_XBP7eh3eoGg2nBbZd0eQ=w240-h480"
 
     private val baseUrl = "https://api22-normal-mya.tmtreader.com"
     private val userAgent =
@@ -185,6 +186,7 @@ class MeloloProvider : DramaProvider {
             val vod = vm.optJSONObject("vodVideoRef") ?: vm
 
             var streamUrl = ""
+            var spadeA = ""
             // Format 1: vodVideoRef.mVideoList (Array)
             val mList = vod.optJSONArray("mVideoList")
             if (mList != null && mList.length() > 0) {
@@ -199,6 +201,7 @@ class MeloloProvider : DramaProvider {
                 }
                 chosen = chosen ?: mList.optJSONObject(0)
                 streamUrl = chosen?.optString("mMainUrl").orEmpty()
+                spadeA = chosen?.optString("mSpadea").orEmpty().ifBlank { chosen?.optString("mSpadeA").orEmpty() }
             }
 
             // Format 2: video_list (Map)
@@ -224,11 +227,23 @@ class MeloloProvider : DramaProvider {
                         }.getOrDefault(rawUrl)
                     }
                     streamUrl = rawUrl
+                    spadeA = chosen?.optString("spade_a").orEmpty()
                 }
             }
 
+            val finalUrl = if (streamUrl.isNotBlank() && spadeA.isNotBlank()) {
+                MeloloCencProxy.preparePlayableUrl(
+                    cacheKey = "${mediaId}_$episodeId",
+                    rawUrl = streamUrl,
+                    spadeA = spadeA,
+                    client = client
+                )
+            } else {
+                streamUrl
+            }
+
             PlaybackSource(
-                streamUrl = streamUrl,
+                streamUrl = finalUrl,
                 headers = mapOf("User-Agent" to "okhttp/3.10.0.1", "Accept" to "*/*"),
                 audioTracks = listOf(AudioTrack("id", "id", "Indonesia", isDefault = true))
             )
