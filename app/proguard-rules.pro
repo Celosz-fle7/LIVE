@@ -1,0 +1,2 @@
+-keep class com.liveStream.app.core.NativeCore { *; }
+-keep class com.liveStream.contract.** { *; }
