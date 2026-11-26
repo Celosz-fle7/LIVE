@@ -52,7 +52,7 @@ jobs:
 
       - name: Prepare Release Artifacts
         env:
-          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          RELEASE_PAT: ${{ secrets.LIVE || secrets.RELEASE_PAT }}
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/debug/*.apk dist/LIVE-app.apk
@@ -78,7 +78,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           repository: Celosz-fle7/LIVE-release
-          token: ${{ secrets.RELEASE_PAT }}
+          token: ${{ secrets.LIVE || secrets.RELEASE_PAT }}
           tag_name: ${{ env.APP_TAG }}
           name: LIVE ${{ env.APP_TAG }}
           body: "Rilis resmi LIVE v${{ env.VERSION_NAME }} (Build ${{ env.VERSION_CODE }})."
@@ -90,7 +90,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Celosz-fle7/LIVE-release
-          token: ${{ secrets.RELEASE_PAT }}
+          token: ${{ secrets.LIVE || secrets.RELEASE_PAT }}
           path: release-repo
 
       - name: Update & Push version.json to LIVE-release
