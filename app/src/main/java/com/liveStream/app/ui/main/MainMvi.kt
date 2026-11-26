@@ -47,6 +47,7 @@ data class MainUiState(
     val forYouCursor: String = "",
     val forYouHasMore: Boolean = false,
     val forYouLoading: Boolean = false,
+    val forYouPageIndex: Int = 0,
     val favorites: List<MediaItem> = emptyList(),
     val errorMessage: String? = null
 )
@@ -60,6 +61,7 @@ sealed interface MainIntent {
     data object Refresh : MainIntent
     data object LoadNextPage : MainIntent
     data object LoadMoreForYou : MainIntent
+    data class SetForYouPage(val index: Int) : MainIntent
     data class ToggleFilterSheet(val show: Boolean) : MainIntent
     data class SelectFilterOption(val selection: FilterSelection) : MainIntent
     data object ApplyFilters : MainIntent
@@ -106,6 +108,7 @@ class MainViewModel : ViewModel() {
             MainIntent.LoadMoreForYou -> if (_uiState.value.forYouHasMore && !_uiState.value.forYouLoading) {
                 loadForYou(reset = false)
             }
+            is MainIntent.SetForYouPage -> _uiState.update { it.copy(forYouPageIndex = intent.index) }
             is MainIntent.ToggleFilterSheet -> _uiState.update { it.copy(showFilterSheet = intent.show) }
             is MainIntent.SelectFilterOption -> _uiState.update { state ->
                 val next = state.selectedFilters.toMutableMap()
@@ -152,6 +155,7 @@ class MainViewModel : ViewModel() {
                     forYouItems = emptyList(),
                     forYouCursor = "",
                     forYouHasMore = false,
+                    forYouPageIndex = 0,
                     selectedFilters = emptyMap(),
                     searchQuery = "",
                     errorMessage = null

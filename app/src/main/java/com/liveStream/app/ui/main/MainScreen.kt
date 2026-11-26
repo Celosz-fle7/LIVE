@@ -215,6 +215,7 @@ fun MainScreen(
                         BottomNavTab.FOR_YOU -> ForYouPagerPage(
                             items = state.forYouItems,
                             favorites = state.favorites,
+                            initialPage = state.forYouPageIndex,
                             isVisible = state.bottomTab == BottomNavTab.FOR_YOU,
                             isLoading = state.forYouLoading,
                             onIntent = viewModel::onIntent,
@@ -612,6 +613,7 @@ private fun PosterCard(item: MediaItem, onClick: () -> Unit) {
 private fun ForYouPagerPage(
     items: List<MediaItem>,
     favorites: List<MediaItem>,
+    initialPage: Int,
     isVisible: Boolean,
     isLoading: Boolean,
     onIntent: (MainIntent) -> Unit,
@@ -629,7 +631,8 @@ private fun ForYouPagerPage(
     }
 
     val context = LocalContext.current
-    val pagerState = rememberPagerState(pageCount = { items.size })
+    val safeInitial = initialPage.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+    val pagerState = rememberPagerState(initialPage = safeInitial, pageCount = { items.size })
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
             repeatMode = Player.REPEAT_MODE_ONE
@@ -640,6 +643,10 @@ private fun ForYouPagerPage(
 
     DisposableEffect(Unit) {
         onDispose { exoPlayer.release() }
+    }
+
+    LaunchedEffect(pagerState.currentPage) {
+        onIntent(MainIntent.SetForYouPage(pagerState.currentPage))
     }
 
     LaunchedEffect(isVisible) {
@@ -656,7 +663,7 @@ private fun ForYouPagerPage(
         val item = currentItem ?: return@LaunchedEffect
         if (!isVisible) return@LaunchedEffect
         val key = "${item.providerId}:${item.mediaId}"
-        if (pagerState.currentPage >= items.size - 3) {
+        if (pagerState.currentPage >= items.size - 4) {
             onIntent(MainIntent.LoadMoreForYou)
         }
         activePlayingKey = ""
