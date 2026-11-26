@@ -7,6 +7,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -47,8 +50,66 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
+      - name: Prepare Release Artifacts
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/*.apk dist/LIVE-app.apk
+          VERSION_NAME=$(grep 'versionName = ' app/build.gradle.kts | head -1 | awk -F '"' '{print $2}')
+          VERSION_CODE=$(grep 'versionCode = ' app/build.gradle.kts | head -1 | awk -F '= ' '{print $2}' | tr -d '[:space:]')
+          echo "APP_TAG=v$VERSION_NAME" >> $GITHUB_ENV
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+          echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_ENV
+          if [ -n "$RELEASE_PAT" ]; then
+            echo "HAS_RELEASE_PAT=true" >> $GITHUB_ENV
+          else
+            echo "HAS_RELEASE_PAT=false" >> $GITHUB_ENV
+          fi
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: live-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: live-apk
+          path: dist/LIVE-app.apk
+
+      - name: Publish to Public Release Repository (LIVE-release)
+        if: github.ref == 'refs/heads/main' && env.HAS_RELEASE_PAT == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: Celosz-fle7/LIVE-release
+          token: ${{ secrets.RELEASE_PAT }}
+          tag_name: ${{ env.APP_TAG }}
+          name: LIVE ${{ env.APP_TAG }}
+          body: "Rilis resmi LIVE v${{ env.VERSION_NAME }} (Build ${{ env.VERSION_CODE }})."
+          make_latest: true
+          files: dist/LIVE-app.apk
+
+      - name: Checkout LIVE-release for OTA Manifest
+        if: github.ref == 'refs/heads/main' && env.HAS_RELEASE_PAT == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Celosz-fle7/LIVE-release
+          token: ${{ secrets.RELEASE_PAT }}
+          path: release-repo
+
+      - name: Update & Push version.json to LIVE-release
+        if: github.ref == 'refs/heads/main' && env.HAS_RELEASE_PAT == 'true'
+        run: |
+          cd release-repo
+          cat <<EOF > version.json
+          {
+            "versionCode": ${VERSION_CODE},
+            "versionName": "${VERSION_NAME}",
+            "apkUrl": "https://github.com/Celosz-fle7/LIVE-release/releases/download/${APP_TAG}/LIVE-app.apk",
+            "changelog": "Rilis resmi LIVE v${VERSION_NAME} (Build ${VERSION_CODE}).",
+            "forceUpdate": false
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update OTA version.json to v${VERSION_NAME} (${VERSION_CODE})"
+            git push origin HEAD:main
+          fi

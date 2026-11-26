@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,13 +49,20 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,14 +70,19 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.app.Activity
 import coil.compose.AsyncImage
+import com.liveStream.app.BuildConfig
 import com.liveStream.app.core.NativeCore
+import com.liveStream.app.core.updater.AppUpdater
+import com.liveStream.app.core.updater.UpdateInfo
 import com.liveStream.app.ui.theme.AccentGold
 import com.liveStream.app.ui.theme.AccentRed
 import com.liveStream.app.ui.theme.BgDark
@@ -87,6 +100,16 @@ fun MainScreen(
     onOpenPlayer: (MediaItem) -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var downloadProgress by remember { mutableIntStateOf(-1) }
+    var updateStatusText by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        AppUpdater.checkForUpdate { info ->
+            if (info != null) updateInfo = info
+        }
+    }
 
     Scaffold(
         containerColor = BgDark,
@@ -107,7 +130,21 @@ fun MainScreen(
                     BottomNavTab.DISCOVER -> DiscoverPage(state, viewModel::onIntent, onOpenPlayer)
                     BottomNavTab.FOR_YOU -> ForYouPagerPage(state.items, onOpenPlayer)
                     BottomNavTab.MY_LIST -> FavoritesPage(state.favorites, onOpenPlayer)
-                    BottomNavTab.PROFILE -> ProfilePage(state)
+                    BottomNavTab.PROFILE -> ProfilePage(
+                        state = state,
+                        statusText = updateStatusText,
+                        onCheckUpdate = {
+                            updateStatusText = "Memeriksa pembaruan..."
+                            AppUpdater.checkForUpdate { info ->
+                                if (info != null) {
+                                    updateInfo = info
+                                    updateStatusText = "Versi v${info.versionName} tersedia"
+                                } else {
+                                    updateStatusText = "Sudah versi terbaru (v${BuildConfig.VERSION_NAME})"
+                                }
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -117,6 +154,56 @@ fun MainScreen(
         MultiLadderFilterSheet(
             state = state,
             onIntent = viewModel::onIntent
+        )
+    }
+
+    updateInfo?.let { info ->
+        AlertDialog(
+            onDismissRequest = { if (!info.forceUpdate && downloadProgress < 0) updateInfo = null },
+            containerColor = SurfaceCard,
+            title = { Text("Update Tersedia v${info.versionName}", color = TextPrimary) },
+            text = {
+                Column {
+                    Text(info.changelog, color = TextSecondary, fontSize = 13.sp)
+                    if (downloadProgress in 0..100) {
+                        Spacer(Modifier.height(12.dp))
+                        LinearProgressIndicator(
+                            progress = { downloadProgress / 100f },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = AccentRed
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text("Mengunduh $downloadProgress%", color = TextSecondary, fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = downloadProgress < 0,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentRed),
+                    onClick = {
+                        val act = context as? Activity ?: return@Button
+                        downloadProgress = 0
+                        AppUpdater.downloadAndInstall(
+                            activity = act,
+                            info = info,
+                            onProgress = { downloadProgress = it },
+                            onError = { err ->
+                                downloadProgress = -1
+                                updateStatusText = err
+                                updateInfo = null
+                            }
+                        )
+                    }
+                ) { Text(if (downloadProgress >= 0) "Mengunduh..." else "Update Sekarang") }
+            },
+            dismissButton = {
+                if (!info.forceUpdate && downloadProgress < 0) {
+                    TextButton(onClick = { updateInfo = null }) {
+                        Text("Nanti", color = TextSecondary)
+                    }
+                }
+            }
         )
     }
 }
@@ -426,7 +513,11 @@ private fun FavoritesPage(favorites: List<MediaItem>, onOpenPlayer: (MediaItem) 
 }
 
 @Composable
-private fun ProfilePage(state: MainUiState) {
+private fun ProfilePage(
+    state: MainUiState,
+    statusText: String,
+    onCheckUpdate: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -435,8 +526,20 @@ private fun ProfilePage(state: MainUiState) {
     ) {
         Text("LIVE Stream Shell", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
+        Text("Versi: v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", color = TextSecondary, fontSize = 13.sp)
         Text("Provider terdaftar: ${state.providers.size}", color = TextSecondary, fontSize = 13.sp)
         Text("Rust Native Core: ${NativeCore.ping()}", color = AccentGold, fontSize = 13.sp)
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = onCheckUpdate,
+            colors = ButtonDefaults.buttonColors(containerColor = AccentRed)
+        ) {
+            Text("Cek Update OTA")
+        }
+        if (statusText.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(statusText, color = TextSecondary, fontSize = 12.sp)
+        }
     }
 }
 
