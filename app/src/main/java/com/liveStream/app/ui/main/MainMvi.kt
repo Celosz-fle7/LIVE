@@ -1,6 +1,8 @@
 package com.liveStream.app.ui.main
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.content.Context
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.liveStream.app.provider.ProviderRegistry
 import com.liveStream.contract.DramaProvider
@@ -72,17 +74,20 @@ sealed interface MainIntent {
     data class ToggleFavorite(val item: MediaItem) : MainIntent
 }
 
-class MainViewModel : ViewModel() {
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+    private val prefs = application.getSharedPreferences("live_prefs", Context.MODE_PRIVATE)
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     init {
         val all = ProviderRegistry.all()
         val summaries = all.map { ProviderSummary(it.id, it.displayName, it.iconUrl) }
-        val firstId = summaries.firstOrNull()?.id.orEmpty()
-        _uiState.update { it.copy(providers = summaries, activeProviderId = firstId) }
-        if (firstId.isNotEmpty()) {
-            loadProvider(firstId)
+        val savedId = prefs.getString("last_provider_id", null)
+        val initialId = summaries.firstOrNull { it.id == savedId }?.id
+            ?: summaries.firstOrNull()?.id.orEmpty()
+        _uiState.update { it.copy(providers = summaries, activeProviderId = initialId) }
+        if (initialId.isNotEmpty()) {
+            loadProvider(initialId)
         }
     }
 
@@ -95,6 +100,7 @@ class MainViewModel : ViewModel() {
                 }
             }
             is MainIntent.SelectProvider -> if (intent.providerId != _uiState.value.activeProviderId) {
+                prefs.edit().putString("last_provider_id", intent.providerId).apply()
                 loadProvider(intent.providerId)
             }
             is MainIntent.SelectCatalogTab -> loadFeed(tabId = intent.tabId, reset = true)
