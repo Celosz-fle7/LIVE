@@ -31,8 +31,10 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.FormatListNumbered
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -127,10 +129,13 @@ private fun FullScreenVerticalPlayer(
     // Default subtitle = Indonesia (atau "off" jika dimatikan)
     var selectedSubLang by remember { mutableStateOf("id") }
     var selectedAudioLang by remember { mutableStateOf("id") }
+    var selectedQuality by remember { mutableStateOf("Auto") }
+    var isFullZoom by remember { mutableStateOf(true) }
 
     var showEpisodeSheet by remember { mutableStateOf(false) }
     var showSubtitleSheet by remember { mutableStateOf(false) }
     var showAudioSheet by remember { mutableStateOf(false) }
+    var showQualitySheet by remember { mutableStateOf(false) }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).apply {
@@ -190,6 +195,19 @@ private fun FullScreenVerticalPlayer(
                 lang == audioLang.lowercase() || lang.startsWith(audioLang.lowercase().take(2))
             } ?: 0
             builder.setOverrideForType(TrackSelectionOverride(audioGroup.mediaTrackGroup, trackIdx))
+        }
+        exoPlayer.trackSelectionParameters = builder.build()
+    }
+
+    fun applyQualityPreference(qualityLabel: String) {
+        val builder = exoPlayer.trackSelectionParameters.buildUpon()
+        when (qualityLabel) {
+            "1080p" -> builder.setMaxVideoSize(1920, 1920)
+            "720p" -> builder.setMaxVideoSize(1280, 1280)
+            "540p" -> builder.setMaxVideoSize(960, 960)
+            "480p" -> builder.setMaxVideoSize(854, 854)
+            "360p" -> builder.setMaxVideoSize(640, 640)
+            else -> builder.clearVideoSizeConstraints()
         }
         exoPlayer.trackSelectionParameters = builder.build()
     }
@@ -285,11 +303,22 @@ private fun FullScreenVerticalPlayer(
                         factory = { ctx ->
                             PlayerView(ctx).apply {
                                 useController = false
-                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                resizeMode = if (isFullZoom) {
+                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                } else {
+                                    AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                }
                                 player = exoPlayer
                             }
                         },
-                        update = { it.player = exoPlayer },
+                        update = {
+                            it.player = exoPlayer
+                            it.resizeMode = if (isFullZoom) {
+                                AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            } else {
+                                AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            }
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 } else if (ep.isLocked) {
@@ -338,10 +367,10 @@ private fun FullScreenVerticalPlayer(
             Text("Geser atas/bawah untuk pindah episode", color = TextSecondary, fontSize = 11.sp)
         }
 
-        // Right Action Rail (Episode, Subtitle, Audio)
+        // Right Action Rail (Episode, Kualitas, Subtitle, Audio, Layar)
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .navigationBarsPadding()
@@ -352,6 +381,12 @@ private fun FullScreenVerticalPlayer(
                 label = "Ep ${currentEp.number}",
                 tint = Color.White,
                 onClick = { showEpisodeSheet = true }
+            )
+            ActionIcon(
+                icon = Icons.Rounded.HighQuality,
+                label = selectedQuality,
+                tint = Color.White,
+                onClick = { showQualitySheet = true }
             )
             ActionIcon(
                 icon = Icons.Rounded.Subtitles,
@@ -365,6 +400,41 @@ private fun FullScreenVerticalPlayer(
                 tint = AccentRed,
                 onClick = { showAudioSheet = true }
             )
+            ActionIcon(
+                icon = Icons.Rounded.AspectRatio,
+                label = if (isFullZoom) "Full" else "Fit",
+                tint = Color.White,
+                onClick = { isFullZoom = !isFullZoom }
+            )
+        }
+    }
+
+    if (showQualitySheet) {
+        ModalBottomSheet(onDismissRequest = { showQualitySheet = false }, containerColor = SurfaceCard) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Text("Pilih Kualitas Video", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                listOf("Auto", "1080p", "720p", "540p", "480p", "360p").forEach { q ->
+                    val selected = selectedQuality == q
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            selectedQuality = q
+                            applyQualityPreference(q)
+                            showQualitySheet = false
+                        }.padding(vertical = 8.dp)
+                    ) {
+                        RadioButton(
+                            selected = selected,
+                            onClick = null,
+                            colors = RadioButtonDefaults.colors(selectedColor = AccentRed)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (q == "Auto") "Otomatis (Terbaik)" else q, color = TextPrimary, fontSize = 14.sp)
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
         }
     }
 

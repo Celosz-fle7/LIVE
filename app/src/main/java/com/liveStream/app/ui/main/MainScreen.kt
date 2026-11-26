@@ -729,16 +729,72 @@ private fun ForYouPagerPage(
                     )
             )
 
-            // Info judul & tombol tonton di kiri bawah
+            // Info detail konten & tombol tonton di kiri bawah
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = 16.dp, end = 84.dp, bottom = 24.dp)
             ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = ProviderRegistry.get(item.providerId).displayName,
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(AccentRed.copy(alpha = 0.85f))
+                            .padding(horizontal = 7.dp, vertical = 2.dp)
+                    )
+                    if (!item.badge.isNullOrBlank()) {
+                        Text(
+                            text = item.badge!!,
+                            color = Color.Black,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(AccentGold)
+                                .padding(horizontal = 7.dp, vertical = 2.dp)
+                        )
+                    }
+                    if (item.totalEpisodes > 0) {
+                        Text(
+                            text = "${item.totalEpisodes} Ep",
+                            color = TextPrimary,
+                            fontSize = 11.sp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0x88000000))
+                                .padding(horizontal = 7.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
                 Text(item.title, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                 if (item.tags.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
-                    Text(item.tags.joinToString(" • "), color = TextSecondary, fontSize = 12.sp, maxLines = 1)
+                    Text(item.tags.joinToString(" • "), color = AccentGold, fontSize = 12.sp, maxLines = 1)
+                }
+                if (item.description.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = item.description,
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                } else {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Cuplikan Episode 1 • Tap untuk jeda/lanjut",
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
                 }
                 Spacer(Modifier.height(10.dp))
                 Button(

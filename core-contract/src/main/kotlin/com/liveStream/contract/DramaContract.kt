@@ -13,7 +13,8 @@ data class MediaItem(
     val coverUrl: String,
     val tags: List<String> = emptyList(),
     val totalEpisodes: Int = 0,
-    val badge: String? = null
+    val badge: String? = null,
+    val description: String = ""
 )
 
 data class FeedPage(
