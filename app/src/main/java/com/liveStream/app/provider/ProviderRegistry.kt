@@ -1,5 +1,6 @@
 package com.liveStream.app.provider
 
+import com.liveStream.app.provider.dramawave.DramaWaveProvider
 import com.liveStream.app.provider.freereels.FreeReelsProvider
 import com.liveStream.app.provider.melolo.MeloloProvider
 import com.liveStream.app.provider.pinedrama.PineDramaProvider
@@ -14,6 +15,7 @@ object ProviderRegistry {
         PineDramaProvider(),
         FreeReelsProvider(),
         MeloloProvider(),
+        DramaWaveProvider(),
         FakeProvider()
     )
 
