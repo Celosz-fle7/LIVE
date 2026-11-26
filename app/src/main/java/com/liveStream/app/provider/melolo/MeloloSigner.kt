@@ -44,6 +44,13 @@ object MeloloSigner {
         MessageDigest.getInstance("MD5").digest(argusSignKey.copyOfRange(16, 32))
     }
 
+    fun canonicalQuery(params: Map<String, String>): String {
+        val valid = params.filterValues { it.isNotEmpty() }
+        return valid.keys.sorted().joinToString("&") { k ->
+            "$k=${URLEncoder.encode(valid[k]!!, "UTF-8")}"
+        }
+    }
+
     fun signFromRaw(
         params: Map<String, String>,
         postBody: String = "",
@@ -51,9 +58,7 @@ object MeloloSigner {
         licenseId: Long = 1611921764L
     ): Map<String, String> {
         val valid = params.filterValues { it.isNotEmpty() }
-        val paramStr = valid.keys.sorted().joinToString("&") { k ->
-            "$k=${URLEncoder.encode(valid[k]!!, "UTF-8").replace("+", "%20")}"
-        }
+        val paramStr = canonicalQuery(valid)
         val now = System.currentTimeMillis() / 1000L
 
         val xSsStub = if (postBody.isNotEmpty()) {

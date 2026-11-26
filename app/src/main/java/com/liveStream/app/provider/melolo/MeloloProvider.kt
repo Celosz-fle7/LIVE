@@ -355,8 +355,7 @@ class MeloloProvider : DramaProvider {
 
     private fun buildUrl(path: String, params: Map<String, String>, hostOverride: String? = null): String {
         val host = hostOverride ?: baseUrl
-        val b = "$host$path".toHttpUrl().newBuilder()
-        params.forEach { (k, v) -> b.addQueryParameter(k, v) }
-        return b.build().toString()
+        val q = MeloloSigner.canonicalQuery(params)
+        return if (q.isEmpty()) "$host$path" else "$host$path?$q"
     }
 }

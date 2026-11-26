@@ -174,7 +174,8 @@ class DramaBoxProvider : DramaProvider {
 
     override suspend fun getEpisodes(mediaId: String, cursor: String): EpisodePage = withContext(Dispatchers.IO) {
         val json = execPost("/chapterv2/list", JSONObject().put("bookId", mediaId))
-        val chList = json.optJSONObject("data")?.optJSONArray("chapterList") ?: JSONArray()
+        val data = json.optJSONObject("data")
+        val chList = data?.optJSONArray("list") ?: data?.optJSONArray("chapterList") ?: JSONArray()
         val episodes = buildList {
             for (i in 0 until chList.length()) {
                 val ch = chList.optJSONObject(i) ?: continue
