@@ -24,8 +24,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -64,6 +66,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -480,7 +483,19 @@ private fun DiscoverPage(
                 CircularProgressIndicator(color = AccentRed)
             }
         } else {
+            val gridState = rememberLazyGridState()
+            val shouldLoadMore by remember(state.items.size, state.hasMore, state.isLoadingMore) {
+                derivedStateOf {
+                    val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                    state.hasMore && !state.isLoadingMore && state.items.isNotEmpty() && lastVisible >= (state.items.size - 6).coerceAtLeast(0)
+                }
+            }
+            LaunchedEffect(shouldLoadMore) {
+                if (shouldLoadMore) onIntent(MainIntent.LoadNextPage)
+            }
+
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Adaptive(minSize = 112.dp),
                 contentPadding = PaddingValues(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -489,6 +504,16 @@ private fun DiscoverPage(
             ) {
                 items(state.items, key = { "${it.providerId}:${it.mediaId}" }) { item ->
                     PosterCard(item = item, onClick = { onOpenPlayer(item) })
+                }
+                if (state.isLoadingMore) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = AccentRed, modifier = Modifier.size(24.dp))
+                        }
+                    }
                 }
             }
         }

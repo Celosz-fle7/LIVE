@@ -37,6 +37,7 @@ data class MainUiState(
     val nextCursor: String = "",
     val hasMore: Boolean = false,
     val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
     val isRefreshing: Boolean = false,
     val searchQuery: String = "",
     val filterLadders: List<FilterLadder> = emptyList(),
@@ -85,8 +86,12 @@ class MainViewModel : ViewModel() {
             is MainIntent.UpdateSearchQuery -> _uiState.update { it.copy(searchQuery = intent.query) }
             MainIntent.SubmitSearch -> runSearch()
             MainIntent.Refresh -> loadFeed(tabId = _uiState.value.activeTabId, reset = true, isRefresh = true)
-            MainIntent.LoadNextPage -> if (_uiState.value.hasMore && !_uiState.value.isLoading) {
-                loadFeed(tabId = _uiState.value.activeTabId, reset = false)
+            MainIntent.LoadNextPage -> if (_uiState.value.hasMore && !_uiState.value.isLoading && !_uiState.value.isLoadingMore) {
+                if (_uiState.value.selectedFilters.isNotEmpty()) {
+                    loadFilteredFeed(reset = false)
+                } else {
+                    loadFeed(tabId = _uiState.value.activeTabId, reset = false)
+                }
             }
             is MainIntent.ToggleFilterSheet -> _uiState.update { it.copy(showFilterSheet = intent.show) }
             is MainIntent.SelectFilterOption -> _uiState.update { state ->
@@ -168,7 +173,8 @@ class MainViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     activeTabId = tabId,
-                    isLoading = !isRefresh,
+                    isLoading = reset && !isRefresh,
+                    isLoadingMore = !reset,
                     isRefreshing = isRefresh,
                     errorMessage = null
                 )
@@ -176,17 +182,19 @@ class MainViewModel : ViewModel() {
             runCatching { activeProvider().getFeed(tabId, cursor) }
                 .onSuccess { page ->
                     _uiState.update { state ->
+                        val merged = if (reset) page.items else (state.items + page.items).distinctBy { "${it.providerId}:${it.mediaId}" }
                         state.copy(
-                            items = if (reset) page.items else state.items + page.items,
+                            items = merged,
                             nextCursor = page.nextCursor,
                             hasMore = page.hasMore,
                             isLoading = false,
+                            isLoadingMore = false,
                             isRefreshing = false
                         )
                     }
                 }.onFailure { err ->
                     _uiState.update {
-                        it.copy(isLoading = false, isRefreshing = false, errorMessage = err.message)
+                        it.copy(isLoading = false, isLoadingMore = false, isRefreshing = false, errorMessage = err.message)
                     }
                 }
         }
@@ -200,19 +208,21 @@ class MainViewModel : ViewModel() {
                 return@launch
             }
             val cursor = if (reset) "" else _uiState.value.nextCursor
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            _uiState.update { it.copy(isLoading = reset, isLoadingMore = !reset, errorMessage = null) }
             runCatching { activeProvider().getFilteredFeed(filters, cursor) }
                 .onSuccess { page ->
                     _uiState.update { state ->
+                        val merged = if (reset) page.items else (state.items + page.items).distinctBy { "${it.providerId}:${it.mediaId}" }
                         state.copy(
-                            items = if (reset) page.items else state.items + page.items,
+                            items = merged,
                             nextCursor = page.nextCursor,
                             hasMore = page.hasMore,
-                            isLoading = false
+                            isLoading = false,
+                            isLoadingMore = false
                         )
                     }
                 }.onFailure { err ->
-                    _uiState.update { it.copy(isLoading = false, errorMessage = err.message) }
+                    _uiState.update { it.copy(isLoading = false, isLoadingMore = false, errorMessage = err.message) }
                 }
         }
     }
