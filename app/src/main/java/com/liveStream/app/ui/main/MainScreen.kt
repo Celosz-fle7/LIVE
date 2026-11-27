@@ -100,6 +100,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ClippingMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -622,6 +623,8 @@ private fun PosterCard(item: MediaItem, onClick: () -> Unit) {
     }
 }
 
+private const val PREVIEW_CLIP_MS = 60_000L
+
 @androidx.annotation.OptIn(UnstableApi::class)
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -743,8 +746,9 @@ private fun ForYouPagerPage(
                     ?: return@LaunchedEffect
                 if (src.streamUrl.isNotBlank() && isVisible) {
                     val dsFactory = InMemoryMediaStore.createDataSourceFactory(src.headers)
-                    val mediaSource = DefaultMediaSourceFactory(dsFactory)
+                    val baseSource = DefaultMediaSourceFactory(dsFactory)
                         .createMediaSource(ExoMediaItem.fromUri(src.streamUrl))
+                    val mediaSource = ClippingMediaSource(baseSource, PREVIEW_CLIP_MS * 1000L)
                     exoPlayer.setMediaSource(mediaSource)
                     exoPlayer.setPlaybackSpeed(playbackSpeed)
                     exoPlayer.prepare()
