@@ -1,8 +1,11 @@
 package com.liveStream.app.provider.dramabox
 
 import android.util.Base64
+import android.util.Log
 import com.liveStream.app.core.InMemoryMediaStore
 import com.liveStream.app.core.ProgressiveMp4Session
+import com.liveStream.app.core.StreamPlan
+import com.liveStream.app.core.StreamingMp4Session
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -16,6 +19,7 @@ import javax.crypto.spec.SecretKeySpec
  * Tanpa ServerSocket dan tanpa download penuh 1 episode sebelum putar.
  */
 object AliyunEcbDecryptor {
+    private const val TAG = "AliyunEcb"
     private const val LICENSE_KEY = "8PfuCPCwtaTqTB00lca1b30cbaa074865b30efce2c7108498"
 
     fun preparePlayableUrl(
@@ -46,10 +50,38 @@ object AliyunEcbDecryptor {
             }
             InMemoryMediaStore.putProgressive(progKey, session)
             "prog://$progKey"
-        }.getOrNull()
+        }.onFailure { Log.d(TAG, "progressive failed: ${it.message}") }.getOrNull()
         if (progResult != null) return progResult
 
-        // 2. Fallback: download penuh jika server tidak support Range
+        // 2. Fallback streaming: pipe/ring-buffer tanpa download penuh
+        val streamKey = "db_${cacheKey}_stream.mp4"
+        if (InMemoryMediaStore.getProgressive(streamKey) != null) return "prog://$streamKey"
+        val streamResult = runCatching {
+            val session = StreamingMp4Session(rawUrl, client, headers) { moovRaw ->
+                val moovPayload = findBoxWithSlice(moovRaw, "moov", 0, moovRaw.size)?.first ?: moovRaw
+                val keyUriRaw = extractKeyUriFromMoov(moovPayload) ?: error("no keyUri")
+                val mediaKey = deriveMediaKey(keyUriRaw)
+                val samples = collectAllSamples(moovPayload).sortedBy { it.first }
+                if (samples.isEmpty()) error("no samples")
+                StreamPlan(
+                    sanitizedMoov = moovRaw,
+                    encryptedRanges = samples.mapNotNull { (off, sz) ->
+                        val aligned = sz and 0x7FFFFFF0
+                        if (aligned <= 0) null else off until (off + aligned.toLong())
+                    },
+                    decrypt = { bytes, offset ->
+                        decryptChunkEcbInPlace(bytes, offset, samples, mediaKey)
+                    }
+                )
+            }
+            session.start()
+            InMemoryMediaStore.putProgressive(streamKey, session)
+            "prog://$streamKey"
+        }.onFailure { Log.d(TAG, "streaming fallback failed: ${it.message}") }.getOrNull()
+        if (streamResult != null) return streamResult
+
+        // 3. Last resort: download penuh (moov di ekor / server tanpa Range)
+        Log.d(TAG, "falling back to full download for $cacheKey")
         val req = Request.Builder()
             .url(rawUrl)
             .header("User-Agent", "DramaBox/7.0.0 (Android)")

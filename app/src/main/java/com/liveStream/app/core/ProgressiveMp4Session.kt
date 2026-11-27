@@ -5,15 +5,19 @@ import okhttp3.Request
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 
+class RangeNotSupportedException(
+    message: String = "HTTP Range not supported"
+) : IOException(message)
+
 /**
- * Shared progressive MP4 Range fetcher + moov scanner + 256KB chunk cache.
+ * Shared progressive MP4 Range fetcher + moov scanner + 1MB chunk cache.
  * Dipakai bersama oleh Melolo (AES-128-CTR) dan DramaBox (Aliyun AES-128-ECB) tanpa download penuh.
  */
 class ProgressiveMp4Session(
     private val rawUrl: String,
     private val client: OkHttpClient,
     private val headers: Map<String, String>,
-    private val chunkSize: Int = 256 * 1024
+    private val chunkSize: Int = 1024 * 1024
 ) : ProgressiveMediaSource {
 
     var totalSize: Long = -1L
@@ -127,16 +131,22 @@ class ProgressiveMp4Session(
         val req = Request.Builder()
             .url(rawUrl)
             .header("Range", "bytes=$start-$end")
+            .header("Accept-Encoding", "identity")
             .apply { headers.forEach { (k, v) -> header(k, v) } }
             .build()
         client.newCall(req).execute().use { resp ->
-            if (resp.code !in 200..299) throw IOException("Range HTTP ${resp.code}")
-            val cr = resp.header("Content-Range").orEmpty()
-            val total = cr.substringAfter("/", "").toLongOrNull()
-                ?: resp.header("Content-Length")?.toLongOrNull()?.let { if (resp.code == 200) it else -1L }
-                ?: -1L
-            val body = resp.body?.bytes() ?: ByteArray(0)
-            return body to total
+            when (resp.code) {
+                206 -> {
+                    val cr = resp.header("Content-Range")
+                        ?: throw IOException("Range response missing Content-Range")
+                    val total = cr.substringAfterLast("/", "").toLongOrNull()
+                        ?: throw IOException("Range response missing total size")
+                    val body = resp.body?.bytes() ?: ByteArray(0)
+                    return body to total
+                }
+                200 -> throw RangeNotSupportedException()
+                else -> throw IOException("Range HTTP ${resp.code}")
+            }
         }
     }
 

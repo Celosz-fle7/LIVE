@@ -1,8 +1,11 @@
 package com.liveStream.app.provider.melolo
 
 import android.util.Base64
+import android.util.Log
 import com.liveStream.app.core.InMemoryMediaStore
 import com.liveStream.app.core.ProgressiveMp4Session
+import com.liveStream.app.core.StreamPlan
+import com.liveStream.app.core.StreamingMp4Session
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import javax.crypto.Cipher
@@ -14,6 +17,8 @@ import javax.crypto.spec.SecretKeySpec
  * Tanpa ServerSocket dan tanpa download penuh 1 episode sebelum putar.
  */
 object MeloloCencProxy {
+
+    private const val TAG = "MeloloCenc"
 
     private data class CencSample(val offset: Long, val size: Int, val iv8: ByteArray)
 
@@ -44,10 +49,33 @@ object MeloloCencProxy {
             }
             InMemoryMediaStore.putProgressive(progKey, session)
             "prog://$progKey"
-        }.getOrNull()
+        }.onFailure { Log.d(TAG, "progressive failed: ${it.message}") }.getOrNull()
         if (progResult != null) return progResult
 
-        // 2. Fallback: download penuh hanya jika server tidak support Range / subsample
+        // 2. Fallback streaming: pipe/ring-buffer tanpa download penuh
+        val streamKey = "melolo_${cacheKey}_stream.mp4"
+        if (InMemoryMediaStore.getProgressive(streamKey) != null) return "prog://$streamKey"
+        val streamResult = runCatching {
+            val session = StreamingMp4Session(rawUrl, client, headers) { moovRaw ->
+                val (sanitizedMoov, samples) = parseAndSanitizeMoov(moovRaw)
+                if (samples.isEmpty()) error("no cenc samples")
+                val keySpec = SecretKeySpec(aesKey, "AES")
+                StreamPlan(
+                    sanitizedMoov = sanitizedMoov,
+                    encryptedRanges = samples.map { it.offset until (it.offset + it.size) },
+                    decrypt = { bytes, offset ->
+                        decryptChunkCtrInPlace(bytes, offset, samples, keySpec)
+                    }
+                )
+            }
+            session.start()
+            InMemoryMediaStore.putProgressive(streamKey, session)
+            "prog://$streamKey"
+        }.onFailure { Log.d(TAG, "streaming fallback failed: ${it.message}") }.getOrNull()
+        if (streamResult != null) return streamResult
+
+        // 3. Last resort: download penuh (moov di ekor / server tanpa Range)
+        Log.d(TAG, "falling back to full download for $cacheKey")
         val req = Request.Builder()
             .url(rawUrl)
             .header("User-Agent", "okhttp/3.10.0.1")

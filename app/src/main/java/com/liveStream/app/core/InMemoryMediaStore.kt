@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap
 interface ProgressiveMediaSource {
     val totalLength: Long
     fun readAt(position: Long, buffer: ByteArray, offset: Int, length: Int): Int
+    fun close() {}
 }
 
 /**
@@ -43,7 +44,7 @@ object InMemoryMediaStore {
     fun putProgressive(key: String, source: ProgressiveMediaSource) {
         if (!progCache.containsKey(key)) {
             if (progOrder.size >= 8) {
-                progCache.remove(progOrder.removeFirst())
+                progCache.remove(progOrder.removeFirst())?.close()
             }
             progOrder.addLast(key)
         }
