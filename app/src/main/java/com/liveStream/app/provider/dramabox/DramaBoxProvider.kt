@@ -182,14 +182,13 @@ class DramaBoxProvider : DramaProvider {
                 val idx = ch.optInt("chapterIndex", i)
                 val chId = ch.optString("chapterId").ifBlank { (idx + 1).toString() }
                 val name = ch.optString("chapterName").ifBlank { "Episode ${idx + 1}" }
-                val locked = ch.optInt("isCharge", 0) == 1
                 chapterIndexMap["$mediaId:$chId"] = idx
                 add(
                     EpisodeItem(
                         episodeId = chId,
                         number = idx + 1,
                         title = name,
-                        isLocked = locked
+                        isLocked = false
                     )
                 )
             }

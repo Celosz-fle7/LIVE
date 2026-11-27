@@ -32,6 +32,8 @@ data class ProviderSummary(
 data class MainUiState(
     val bottomTab: BottomNavTab = BottomNavTab.DISCOVER,
     val providers: List<ProviderSummary> = emptyList(),
+    val allProviders: List<ProviderSummary> = emptyList(),
+    val disabledProviderIds: Set<String> = emptySet(),
     val activeProviderId: String = "",
     val tabs: List<TabSpec> = emptyList(),
     val activeTabId: String = "",
@@ -72,6 +74,7 @@ sealed interface MainIntent {
     data object ApplyFilters : MainIntent
     data object ClearFilters : MainIntent
     data class ToggleFavorite(val item: MediaItem) : MainIntent
+    data class ToggleProviderEnabled(val providerId: String, val enabled: Boolean) : MainIntent
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -81,11 +84,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         val all = ProviderRegistry.all()
-        val summaries = all.map { ProviderSummary(it.id, it.displayName, it.iconUrl) }
+        val allSummaries = all.map { ProviderSummary(it.id, it.displayName, it.iconUrl) }
+        val savedDisabled = prefs.getStringSet("disabled_provider_ids", emptySet())?.toSet() ?: emptySet()
+        var enabled = allSummaries.filterNot { it.id in savedDisabled }
+        val effectiveDisabled = if (enabled.isEmpty() && allSummaries.isNotEmpty()) {
+            enabled = allSummaries
+            emptySet()
+        } else {
+            savedDisabled
+        }
         val savedId = prefs.getString("last_provider_id", null)
-        val initialId = summaries.firstOrNull { it.id == savedId }?.id
-            ?: summaries.firstOrNull()?.id.orEmpty()
-        _uiState.update { it.copy(providers = summaries, activeProviderId = initialId) }
+        val initialId = enabled.firstOrNull { it.id == savedId }?.id
+            ?: enabled.firstOrNull()?.id.orEmpty()
+        _uiState.update {
+            it.copy(
+                providers = enabled,
+                allProviders = allSummaries,
+                disabledProviderIds = effectiveDisabled,
+                activeProviderId = initialId
+            )
+        }
         if (initialId.isNotEmpty()) {
             loadProvider(initialId)
         }
@@ -160,6 +178,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     listOf(intent.item) + state.favorites
                 }
                 state.copy(favorites = updated)
+            }
+            is MainIntent.ToggleProviderEnabled -> {
+                val state = _uiState.value
+                val nextDisabled = state.disabledProviderIds.toMutableSet()
+                if (intent.enabled) {
+                    nextDisabled.remove(intent.providerId)
+                } else {
+                    nextDisabled.add(intent.providerId)
+                }
+                val nextEnabled = state.allProviders.filterNot { it.id in nextDisabled }
+                if (nextEnabled.isEmpty()) return
+                prefs.edit().putStringSet("disabled_provider_ids", nextDisabled.toSet()).apply()
+                val activeStillEnabled = nextEnabled.any { it.id == state.activeProviderId }
+                val nextActiveId = if (activeStillEnabled) state.activeProviderId else nextEnabled.first().id
+                _uiState.update {
+                    it.copy(
+                        providers = nextEnabled,
+                        disabledProviderIds = nextDisabled.toSet(),
+                        activeProviderId = nextActiveId
+                    )
+                }
+                if (!activeStillEnabled && nextActiveId.isNotEmpty()) {
+                    prefs.edit().putString("last_provider_id", nextActiveId).apply()
+                    loadProvider(nextActiveId)
+                }
             }
         }
     }

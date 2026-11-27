@@ -31,10 +31,12 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
@@ -63,6 +65,8 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
@@ -241,6 +245,9 @@ fun MainScreen(
                         BottomNavTab.PROFILE -> ProfilePage(
                             state = state,
                             statusText = updateStatusText,
+                            onToggleProvider = { providerId, enabled ->
+                                viewModel.onIntent(MainIntent.ToggleProviderEnabled(providerId, enabled))
+                            },
                             onCheckUpdate = {
                                 updateStatusText = "Memeriksa pembaruan..."
                                 AppUpdater.checkForUpdate { info ->
@@ -1128,18 +1135,20 @@ private fun FavoritesPage(
 private fun ProfilePage(
     state: MainUiState,
     statusText: String,
+    onToggleProvider: (String, Boolean) -> Unit,
     onCheckUpdate: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
         Text("LIVE Stream Shell", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text("Versi: v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", color = TextSecondary, fontSize = 13.sp)
-        Text("Provider terdaftar: ${state.providers.size}", color = TextSecondary, fontSize = 13.sp)
+        Text("Provider aktif di Beranda: ${state.providers.size} / ${state.allProviders.size}", color = TextSecondary, fontSize = 13.sp)
         Text("Rust Native Core: ${NativeCore.ping()}", color = AccentGold, fontSize = 13.sp)
         Spacer(Modifier.height(16.dp))
         Button(
@@ -1151,6 +1160,52 @@ private fun ProfilePage(
         if (statusText.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text(statusText, color = TextSecondary, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(24.dp))
+        Text("Kontrol Provider Beranda", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Aktifkan atau nonaktifkan provider yang tampil di Beranda (minimal 1 aktif).",
+            color = TextSecondary,
+            fontSize = 12.sp
+        )
+        Spacer(Modifier.height(10.dp))
+        state.allProviders.forEach { p ->
+            val enabled = p.id !in state.disabledProviderIds
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceCard)
+                    .clickable { onToggleProvider(p.id, !enabled) }
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+            ) {
+                ProviderLogo(iconUrl = p.iconUrl, name = p.displayName, sizeDp = 32)
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = p.displayName,
+                        color = if (enabled) TextPrimary else TextSecondary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (enabled) "Tampil di Beranda" else "Disembunyikan",
+                        color = if (enabled) AccentGold else TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { onToggleProvider(p.id, it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = AccentRed
+                    )
+                )
+            }
         }
     }
 }
