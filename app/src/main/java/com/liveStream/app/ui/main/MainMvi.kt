@@ -188,10 +188,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val ladders = p.getFilterLadders()
                 val defaultTab = tabs.firstOrNull { it.isDefault }?.id ?: tabs.firstOrNull()?.id.orEmpty()
                 val page = p.getFeed(defaultTab, cursor = "")
-                val fyTabs = runCatching { p.getForYouTabs() }.getOrDefault(emptyList())
-                val defaultFyTab = fyTabs.firstOrNull { it.isDefault }?.id ?: fyTabs.firstOrNull()?.id.orEmpty()
-                val forYou = runCatching { p.getForYouFeed(defaultFyTab, "") }.getOrDefault(page)
-                listOf(tabs, ladders, defaultTab, page, forYou, fyTabs, defaultFyTab)
+                listOf(tabs, ladders, defaultTab, page)
             }.onSuccess { res ->
                 @Suppress("UNCHECKED_CAST")
                 val tabs = res[0] as List<TabSpec>
@@ -199,10 +196,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val ladders = res[1] as List<FilterLadder>
                 val defaultTab = res[2] as String
                 val page = res[3] as com.liveStream.contract.FeedPage
-                val forYou = res[4] as com.liveStream.contract.FeedPage
-                @Suppress("UNCHECKED_CAST")
-                val fyTabs = res[5] as List<TabSpec>
-                val defaultFyTab = res[6] as String
                 _uiState.update {
                     it.copy(
                         tabs = tabs,
@@ -211,13 +204,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         items = page.items,
                         nextCursor = page.nextCursor,
                         hasMore = page.hasMore,
-                        forYouTabs = fyTabs,
-                        activeForYouTabId = defaultFyTab,
-                        forYouItems = forYou.items,
-                        forYouCursor = forYou.nextCursor,
-                        forYouHasMore = forYou.hasMore,
                         isLoading = false
                     )
+                }
+                // Lazy-load Untukmu di background agar layar Jelajah langsung tampil
+                viewModelScope.launch {
+                    runCatching {
+                        val p = ProviderRegistry.get(providerId)
+                        val fyTabs = runCatching { p.getForYouTabs() }.getOrDefault(emptyList())
+                        val defaultFyTab = fyTabs.firstOrNull { it.isDefault }?.id ?: fyTabs.firstOrNull()?.id.orEmpty()
+                        val forYou = runCatching { p.getForYouFeed(defaultFyTab, "") }.getOrDefault(page)
+                        Triple(fyTabs, defaultFyTab, forYou)
+                    }.onSuccess { (fyTabs, defaultFyTab, forYou) ->
+                        if (_uiState.value.activeProviderId == providerId) {
+                            _uiState.update {
+                                it.copy(
+                                    forYouTabs = fyTabs,
+                                    activeForYouTabId = defaultFyTab,
+                                    forYouItems = forYou.items,
+                                    forYouCursor = forYou.nextCursor,
+                                    forYouHasMore = forYou.hasMore
+                                )
+                            }
+                        }
+                    }
                 }
             }.onFailure { err ->
                 _uiState.update { it.copy(isLoading = false, errorMessage = err.message) }

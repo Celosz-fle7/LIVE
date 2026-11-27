@@ -2,6 +2,7 @@ package com.liveStream.app.provider.dramabox
 
 import android.util.Base64
 import com.liveStream.app.core.InMemoryMediaStore
+import com.liveStream.app.core.ProgressiveMp4Session
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -11,8 +12,8 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Dekriptor in-memory Aliyun License private-encryption (`.encrypt.mp4`) untuk DramaBox.
- * Tanpa ServerSocket — output disimpan ke InMemoryMediaStore (`mem://`).
+ * Dekriptor progressive-on-the-fly (`prog://`) Aliyun License private-encryption (`.encrypt.mp4`) untuk DramaBox.
+ * Tanpa ServerSocket dan tanpa download penuh 1 episode sebelum putar.
  */
 object AliyunEcbDecryptor {
     private const val LICENSE_KEY = "8PfuCPCwtaTqTB00lca1b30cbaa074865b30efce2c7108498"
@@ -23,9 +24,32 @@ object AliyunEcbDecryptor {
         client: OkHttpClient
     ): String {
         if (!rawUrl.contains(".encrypt")) return rawUrl
+        val progKey = "db_$cacheKey.mp4"
+        if (InMemoryMediaStore.getProgressive(progKey) != null) return "prog://$progKey"
         val memKey = "$cacheKey.mp4"
         if (InMemoryMediaStore.get(memKey) != null) return "mem://$memKey"
 
+        val headers = mapOf("User-Agent" to "DramaBox/7.0.0 (Android)", "Accept" to "*/*")
+
+        // 1. Jalur utama: Progressive Range decrypt-on-the-fly (hanya ambil moov ~512KB)
+        val progResult = runCatching {
+            val session = ProgressiveMp4Session(rawUrl, client, headers)
+            val (moovRaw, moovStart) = session.locateMoov()
+            val moovPayload = findBoxWithSlice(moovRaw, "moov", 0, moovRaw.size)?.first ?: moovRaw
+            val keyUriRaw = extractKeyUriFromMoov(moovPayload) ?: error("no keyUri")
+            val mediaKey = deriveMediaKey(keyUriRaw)
+            val samples = collectAllSamples(moovPayload).sortedBy { it.first }
+            if (samples.isEmpty()) error("no samples")
+
+            session.attachMoovAndDecryptor(moovRaw, moovStart) { chunk, fileOff ->
+                decryptChunkEcbInPlace(chunk, fileOff, samples, mediaKey)
+            }
+            InMemoryMediaStore.putProgressive(progKey, session)
+            "prog://$progKey"
+        }.getOrNull()
+        if (progResult != null) return progResult
+
+        // 2. Fallback: download penuh jika server tidak support Range
         val req = Request.Builder()
             .url(rawUrl)
             .header("User-Agent", "DramaBox/7.0.0 (Android)")
@@ -42,21 +66,69 @@ object AliyunEcbDecryptor {
         return "mem://$memKey"
     }
 
+    private fun collectAllSamples(moovPayload: ByteArray): List<Pair<Long, Int>> {
+        val tables = collectTrakTables(moovPayload)
+        val samples = mutableListOf<Pair<Long, Int>>()
+        for ((stsz, chunk, stsc, co64) in tables) {
+            samples.addAll(expandSamples(stsc, chunk, parseStsz(stsz), co64))
+        }
+        return samples
+    }
+
+    private fun decryptChunkEcbInPlace(
+        chunk: ByteArray,
+        fileOffset: Long,
+        samples: List<Pair<Long, Int>>,
+        mediaKey: ByteArray
+    ) {
+        if (chunk.isEmpty() || samples.isEmpty()) return
+        val rangeStart = fileOffset
+        val rangeEnd = fileOffset + chunk.size
+        val cipher = Cipher.getInstance("AES/ECB/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(mediaKey, "AES"))
+
+        var lo = 0
+        var hi = samples.size - 1
+        var firstIdx = samples.size
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            val (off, sz) = samples[mid]
+            if (off + (sz and 0x7FFFFFF0) > rangeStart) {
+                firstIdx = mid
+                hi = mid - 1
+            } else {
+                lo = mid + 1
+            }
+        }
+
+        for (idx in firstIdx until samples.size) {
+            val (off, sz) = samples[idx]
+            if (off >= rangeEnd) break
+            val aligned = sz and 0x7FFFFFF0
+            var blkStart = off
+            val blkLimit = off + aligned
+            while (blkStart + 16 <= blkLimit) {
+                if (blkStart >= rangeStart && blkStart + 16 <= rangeEnd) {
+                    val inChunk = (blkStart - rangeStart).toInt()
+                    val dec = cipher.doFinal(chunk, inChunk, 16)
+                    dec.copyInto(chunk, inChunk, 0, 16)
+                }
+                blkStart += 16
+            }
+        }
+    }
+
     private fun decryptMp4(mp4: ByteArray): ByteArray {
         val moovSlice = findBoxWithSlice(mp4, "moov", 0, mp4.size) ?: return mp4
         val keyUriRaw = extractKeyUriFromMoov(moovSlice.first) ?: return mp4
         val mediaKey = deriveMediaKey(keyUriRaw)
         val out = mp4.copyOf()
-
-        val tables = collectTrakTables(moovSlice.first)
-        val samples = mutableListOf<Pair<Int, Int>>()
-        for ((stsz, chunk, stsc, co64) in tables) {
-            samples.addAll(expandSamples(stsc, chunk, parseStsz(stsz), co64))
-        }
+        val samples = collectAllSamples(moovSlice.first)
 
         val cipher = Cipher.getInstance("AES/ECB/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(mediaKey, "AES"))
-        for ((off, sz) in samples) {
+        for ((offLong, sz) in samples) {
+            val off = offLong.toInt()
             val aligned = sz and 0x7FFFFFF0
             if (off < 0 || off + aligned > out.size || aligned <= 0) continue
             val dec = cipher.doFinal(out, off, aligned)
@@ -199,7 +271,7 @@ object AliyunEcbDecryptor {
         return List(count) { i -> u32(stsz, 12 + i * 4) }
     }
 
-    private fun expandSamples(stsc: ByteArray, stco: ByteArray, sizes: List<Int>, co64: Boolean): List<Pair<Int, Int>> {
+    private fun expandSamples(stsc: ByteArray, stco: ByteArray, sizes: List<Int>, co64: Boolean): List<Pair<Long, Int>> {
         val stscCount = u32(stsc, 4)
         val stcoCount = u32(stco, 4)
         val chunkN = IntArray(stcoCount)
@@ -212,11 +284,11 @@ object AliyunEcbDecryptor {
             val end = if (i + 1 < stscCount) u32(stsc, 8 + (i + 1) * 12) - 1 else stcoCount
             for (c in start until minOf(end, stcoCount)) chunkN[c] = spc
         }
-        val out = mutableListOf<Pair<Int, Int>>()
+        val out = mutableListOf<Pair<Long, Int>>()
         var si = 0
         for (c in 0 until stcoCount) {
             if (si >= sizes.size) break
-            var base = if (co64) u64(stco, 8 + c * 8).toInt() else u32(stco, 8 + c * 4)
+            var base = if (co64) u64(stco, 8 + c * 8) else (u32(stco, 8 + c * 4).toLong() and 0xFFFFFFFFL)
             for (s in 0 until chunkN[c]) {
                 if (si >= sizes.size) break
                 out.add(base to sizes[si])

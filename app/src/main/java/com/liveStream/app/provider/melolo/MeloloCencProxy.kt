@@ -2,6 +2,7 @@ package com.liveStream.app.provider.melolo
 
 import android.util.Base64
 import com.liveStream.app.core.InMemoryMediaStore
+import com.liveStream.app.core.ProgressiveMp4Session
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import javax.crypto.Cipher
@@ -9,10 +10,12 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Dekriptor CENC (AES-128-CTR) in-memory untuk stream Melolo (`spade_a`).
- * Tanpa ServerSocket / localhost HTTP server — output disimpan di InMemoryMediaStore (`mem://`).
+ * Dekriptor CENC (AES-128-CTR) progressive-on-the-fly (`prog://`) untuk stream Melolo (`spade_a`).
+ * Tanpa ServerSocket dan tanpa download penuh 1 episode sebelum putar.
  */
 object MeloloCencProxy {
+
+    private data class CencSample(val offset: Long, val size: Int, val iv8: ByteArray)
 
     fun preparePlayableUrl(
         cacheKey: String,
@@ -21,12 +24,30 @@ object MeloloCencProxy {
         client: OkHttpClient
     ): String {
         if (spadeA.isBlank()) return rawUrl
+        val progKey = "melolo_$cacheKey.mp4"
+        if (InMemoryMediaStore.getProgressive(progKey) != null) return "prog://$progKey"
         val memKey = "$cacheKey.mp4"
-        if (InMemoryMediaStore.get(memKey) != null) {
-            return "mem://$memKey"
-        }
+        if (InMemoryMediaStore.get(memKey) != null) return "mem://$memKey"
 
         val aesKey = extractKeyFromSpadeA(spadeA) ?: return rawUrl
+        val headers = mapOf("User-Agent" to "okhttp/3.10.0.1", "Accept" to "*/*")
+
+        // 1. Jalur utama: Progressive Range decrypt-on-the-fly (hanya ambil moov ~512KB)
+        val progResult = runCatching {
+            val session = ProgressiveMp4Session(rawUrl, client, headers)
+            val (moovRaw, moovStart) = session.locateMoov()
+            val (sanitizedMoov, samples) = parseAndSanitizeMoov(moovRaw)
+            if (samples.isEmpty()) error("no cenc samples")
+            val keySpec = SecretKeySpec(aesKey, "AES")
+            session.attachMoovAndDecryptor(sanitizedMoov, moovStart) { chunk, fileOff ->
+                decryptChunkCtrInPlace(chunk, fileOff, samples, keySpec)
+            }
+            InMemoryMediaStore.putProgressive(progKey, session)
+            "prog://$progKey"
+        }.getOrNull()
+        if (progResult != null) return progResult
+
+        // 2. Fallback: download penuh hanya jika server tidak support Range / subsample
         val req = Request.Builder()
             .url(rawUrl)
             .header("User-Agent", "okhttp/3.10.0.1")
@@ -41,6 +62,133 @@ object MeloloCencProxy {
         if (clean.isEmpty()) return rawUrl
         InMemoryMediaStore.put(memKey, clean)
         return "mem://$memKey"
+    }
+
+    private fun parseAndSanitizeMoov(moovRaw: ByteArray): Pair<ByteArray, List<CencSample>> {
+        val moov = moovRaw.copyOf()
+        val samples = mutableListOf<CencSample>()
+        var pos = findBox(moov, "trak", 0, moov.size)
+        while (pos >= 0) {
+            val trakSize = readU32(moov, pos - 4)
+            val trakEnd = if (trakSize > 8 && pos - 4 + trakSize <= moov.size) pos - 4 + trakSize else moov.size
+            samples.addAll(extractTrackSamples(moov, pos, trakEnd))
+            pos = findBox(moov, "trak", trakEnd, moov.size)
+        }
+        samples.sortBy { it.offset }
+
+        val hasHvcC = findBox(moov, "hvcC", 0, moov.size) >= 0
+        val hasAvcC = findBox(moov, "avcC", 0, moov.size) >= 0
+        val fourCC = if (hasHvcC && !hasAvcC) "hvc1" else "avc1"
+        replaceBoxType(moov, "encv", fourCC, 0, moov.size)
+        replaceBoxType(moov, "enca", "mp4a", 0, moov.size)
+        for (drmBox in listOf("sinf", "senc", "saio", "saiz", "schm", "schi", "tenc", "pssh")) {
+            replaceBoxType(moov, drmBox, "free", 0, moov.size)
+        }
+        return moov to samples
+    }
+
+    private fun extractTrackSamples(moov: ByteArray, trakPos: Int, trakEnd: Int): List<CencSample> {
+        val stszPos = findBox(moov, "stsz", trakPos, trakEnd)
+        val stcoPos = findBox(moov, "stco", trakPos, trakEnd)
+        val stscPos = findBox(moov, "stsc", trakPos, trakEnd)
+        val sencPos = findBox(moov, "senc", trakPos, trakEnd)
+        if (stszPos < 0 || stcoPos < 0 || stscPos < 0 || sencPos < 0) return emptyList()
+
+        val sencFlags = readU32(moov, sencPos + 4) and 0x00FFFFFF
+        if ((sencFlags and 0x02) != 0) return emptyList() // fallback for subsample
+
+        val fixedSize = readU32(moov, stszPos + 8)
+        val scnt = readU32(moov, stszPos + 12)
+        val ivCnt = readU32(moov, sencPos + 8)
+        if (scnt <= 0 || ivCnt != scnt) return emptyList()
+        val sizes = IntArray(scnt) { i ->
+            if (fixedSize != 0) fixedSize else readU32(moov, stszPos + 16 + i * 4)
+        }
+
+        val ccnt = readU32(moov, stcoPos + 8)
+        val chunks = IntArray(ccnt) { i -> readU32(moov, stcoPos + 12 + i * 4) }
+        val ecnt = readU32(moov, stscPos + 8)
+        val stsc = Array(ecnt) { i ->
+            val b = stscPos + 12 + i * 12
+            intArrayOf(readU32(moov, b), readU32(moov, b + 4))
+        }
+
+        val out = ArrayList<CencSample>(scnt)
+        var sIdx = 0
+        for (cIdx in 0 until ccnt) {
+            val chunkNo = cIdx + 1
+            var spc = stsc.firstOrNull()?.get(1) ?: 1
+            for (e in stsc) if (chunkNo >= e[0]) spc = e[1]
+            var off = chunks[cIdx].toLong() and 0xFFFFFFFFL
+            for (s in 0 until spc) {
+                if (sIdx < scnt) {
+                    val ivOff = sencPos + 12 + sIdx * 8
+                    if (ivOff + 8 > moov.size) return emptyList()
+                    out.add(CencSample(off, sizes[sIdx], moov.copyOfRange(ivOff, ivOff + 8)))
+                    off += sizes[sIdx]
+                    sIdx++
+                }
+            }
+        }
+        return out
+    }
+
+    private fun decryptChunkCtrInPlace(
+        chunk: ByteArray,
+        fileOffset: Long,
+        samples: List<CencSample>,
+        keySpec: SecretKeySpec
+    ) {
+        if (chunk.isEmpty() || samples.isEmpty()) return
+        val rangeStart = fileOffset
+        val rangeEnd = fileOffset + chunk.size
+        val ecb = Cipher.getInstance("AES/ECB/NoPadding")
+        ecb.init(Cipher.ENCRYPT_MODE, keySpec)
+        val counterBlock = ByteArray(16)
+        val keyStream = ByteArray(16)
+
+        // Binary search first sample with offset + size > rangeStart
+        var lo = 0
+        var hi = samples.size - 1
+        var firstIdx = samples.size
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            val s = samples[mid]
+            if (s.offset + s.size > rangeStart) {
+                firstIdx = mid
+                hi = mid - 1
+            } else {
+                lo = mid + 1
+            }
+        }
+
+        for (idx in firstIdx until samples.size) {
+            val s = samples[idx]
+            if (s.offset >= rangeEnd) break
+            val sEnd = s.offset + s.size
+            val overlapStart = maxOf(s.offset, rangeStart)
+            val overlapEnd = minOf(sEnd, rangeEnd)
+            val overlapLen = (overlapEnd - overlapStart).toInt()
+            var posInSample = (overlapStart - s.offset).toInt()
+            var done = 0
+
+            while (done < overlapLen) {
+                val blockIdx = (posInSample / 16).toLong()
+                val blockOff = posInSample % 16
+                val take = minOf(16 - blockOff, overlapLen - done)
+                s.iv8.copyInto(counterBlock, 0)
+                for (k in 0 until 8) {
+                    counterBlock[8 + k] = ((blockIdx ushr ((7 - k) * 8)) and 0xFFL).toByte()
+                }
+                ecb.doFinal(counterBlock, 0, 16, keyStream, 0)
+                val outPos = (overlapStart - rangeStart).toInt() + done
+                for (j in 0 until take) {
+                    chunk[outPos + j] = (chunk[outPos + j].toInt() xor keyStream[blockOff + j].toInt()).toByte()
+                }
+                posInSample += take
+                done += take
+            }
+        }
     }
 
     private fun extractKeyFromSpadeA(spadeABase64: String): ByteArray? = runCatching {

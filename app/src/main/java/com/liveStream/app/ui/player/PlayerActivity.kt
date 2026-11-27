@@ -403,6 +403,14 @@ private fun FullScreenVerticalPlayer(
             applyTrackPreferences(selectedSubLang, selectedAudioLang)
             exoPlayer.playWhenReady = true
             activePlayingEpIndex = currentEpIndex
+
+            // Pre-fetch episode berikutnya di background agar swipe/auto-next instan
+            val nextEp = episodes.getOrNull(currentEpIndex + 1)
+            if (nextEp != null && !nextEp.isLocked) {
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { provider.resolvePlayback(mediaId, nextEp.episodeId) }
+                }
+            }
         }
     }
 
