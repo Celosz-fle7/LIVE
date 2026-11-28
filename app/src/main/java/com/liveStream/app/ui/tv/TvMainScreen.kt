@@ -486,16 +486,21 @@ fun TvMainScreen(
                     }
                 },
                 onDownloadUpdate = { info ->
-                    downloadProgress = 0
-                    AppUpdater.downloadAndInstall(
-                        context = context,
-                        info = info,
-                        onProgress = { pct -> downloadProgress = pct },
-                        onError = { msg ->
-                            downloadProgress = -1
-                            updateStatusText = msg
-                        }
-                    )
+                    val act = context as? Activity
+                    if (act == null) {
+                        updateStatusText = "Gagal memulai unduhan update"
+                    } else {
+                        downloadProgress = 0
+                        AppUpdater.downloadAndInstall(
+                            activity = act,
+                            info = info,
+                            onProgress = { pct -> downloadProgress = pct },
+                            onError = { msg ->
+                                downloadProgress = -1
+                                updateStatusText = msg
+                            }
+                        )
+                    }
                 },
                 onClose = { activeOverlay = TvOverlay.NONE }
             )
