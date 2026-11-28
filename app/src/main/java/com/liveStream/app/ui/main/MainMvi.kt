@@ -54,6 +54,7 @@ data class MainUiState(
     val forYouHasMore: Boolean = false,
     val forYouLoading: Boolean = false,
     val forYouPageIndex: Int = 0,
+    val forYouRefreshToken: Int = 0,
     val favorites: List<MediaItem> = emptyList(),
     val errorMessage: String? = null
 )
@@ -67,6 +68,7 @@ sealed interface MainIntent {
     data object Refresh : MainIntent
     data object LoadNextPage : MainIntent
     data object LoadMoreForYou : MainIntent
+    data object RefreshForYou : MainIntent
     data class SelectForYouTab(val tabId: String) : MainIntent
     data class SetForYouPage(val index: Int) : MainIntent
     data class ToggleFilterSheet(val show: Boolean) : MainIntent
@@ -80,6 +82,7 @@ sealed interface MainIntent {
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("live_prefs", Context.MODE_PRIVATE)
     private val _uiState = MutableStateFlow(MainUiState())
+    private val seenForYouIds = LinkedHashSet<String>()
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     init {
@@ -113,8 +116,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         when (intent) {
             is MainIntent.SelectBottomTab -> {
                 _uiState.update { it.copy(bottomTab = intent.tab) }
-                if (intent.tab == BottomNavTab.FOR_YOU && _uiState.value.forYouItems.isEmpty() && !_uiState.value.forYouLoading) {
-                    loadForYou(reset = true)
+                if (intent.tab == BottomNavTab.FOR_YOU && !_uiState.value.forYouLoading) {
+                    if (_uiState.value.forYouItems.isEmpty()) {
+                        loadForYou(reset = true)
+                    } else {
+                        refreshForYouFromServer()
+                    }
                 }
             }
             is MainIntent.SelectProvider -> if (intent.providerId != _uiState.value.activeProviderId) {
@@ -134,6 +141,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             MainIntent.LoadMoreForYou -> if (_uiState.value.forYouHasMore && !_uiState.value.forYouLoading) {
                 loadForYou(reset = false)
+            }
+            MainIntent.RefreshForYou -> if (!_uiState.value.forYouLoading) {
+                refreshForYouFromServer()
             }
             is MainIntent.SelectForYouTab -> {
                 _uiState.update {
@@ -351,6 +361,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             forYouItems = merged,
                             forYouCursor = page.nextCursor,
                             forYouHasMore = page.hasMore,
+                            forYouLoading = false
+                        )
+                    }
+                }.onFailure {
+                    _uiState.update { it.copy(forYouLoading = false) }
+                }
+        }
+    }
+
+    private fun refreshForYouFromServer() {
+        viewModelScope.launch {
+            val stateBefore = _uiState.value
+            val tabId = stateBefore.activeForYouTabId
+            // Catat item yang sudah lewat sampai halaman aktif agar tidak muter di konten yang sama
+            val currentIdx = stateBefore.forYouPageIndex.coerceIn(0, stateBefore.forYouItems.size)
+            stateBefore.forYouItems.take(currentIdx + 1).forEach {
+                seenForYouIds.add("${it.providerId}:${it.mediaId}")
+            }
+            if (seenForYouIds.size > 200) {
+                seenForYouIds.clear()
+            }
+
+            // Jika server masih punya cursor lanjutan, tarik batch baru dari server; kalau habis, tarik ulang dari awal
+            val useNextCursor = stateBefore.forYouHasMore && stateBefore.forYouCursor.isNotBlank()
+            val reqCursor = if (useNextCursor) stateBefore.forYouCursor else ""
+            _uiState.update { it.copy(forYouLoading = true) }
+
+            runCatching { activeProvider().getForYouFeed(tabId, reqCursor) }
+                .onSuccess { page ->
+                    val fresh = page.items.distinctBy { "${it.providerId}:${it.mediaId}" }
+                    val unseen = fresh.filterNot { "${it.providerId}:${it.mediaId}" in seenForYouIds }
+                    val seen = fresh.filter { "${it.providerId}:${it.mediaId}" in seenForYouIds }
+                    val ordered = when {
+                        unseen.isNotEmpty() -> unseen + seen
+                        fresh.size > 1 -> fresh.shuffled()
+                        else -> fresh
+                    }
+                    _uiState.update { st ->
+                        st.copy(
+                            forYouItems = if (ordered.isNotEmpty()) ordered else st.forYouItems,
+                            forYouCursor = page.nextCursor,
+                            forYouHasMore = page.hasMore,
+                            forYouPageIndex = 0,
+                            forYouRefreshToken = st.forYouRefreshToken + 1,
                             forYouLoading = false
                         )
                     }

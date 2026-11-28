@@ -137,15 +137,21 @@ object AliyunEcbDecryptor {
             val (off, sz) = samples[idx]
             if (off >= rangeEnd) break
             val aligned = sz and 0x7FFFFFF0
-            var blkStart = off
+            if (aligned <= 0) continue
             val blkLimit = off + aligned
-            while (blkStart + 16 <= blkLimit) {
-                if (blkStart >= rangeStart && blkStart + 16 <= rangeEnd) {
-                    val inChunk = (blkStart - rangeStart).toInt()
-                    val dec = cipher.doFinal(chunk, inChunk, 16)
-                    dec.copyInto(chunk, inChunk, 0, 16)
-                }
-                blkStart += 16
+            // Hitung rentang blok 16-byte kontigu yang sepenuhnya ada di dalam chunk ini
+            var firstBlk = off
+            if (firstBlk < rangeStart) {
+                val skipBytes = rangeStart - firstBlk
+                val skipBlocks = (skipBytes + 15L) / 16L
+                firstBlk += skipBlocks * 16L
+            }
+            val maxEnd = minOf(blkLimit, rangeEnd)
+            val avail = maxEnd - firstBlk
+            val segLen = (avail and 0x7FFFFFF0L).toInt()
+            if (segLen >= 16) {
+                val inChunk = (firstBlk - rangeStart).toInt()
+                cipher.doFinal(chunk, inChunk, segLen, chunk, inChunk)
             }
         }
     }

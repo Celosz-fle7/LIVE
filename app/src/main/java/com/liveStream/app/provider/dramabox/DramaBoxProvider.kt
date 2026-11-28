@@ -54,7 +54,13 @@ class DramaBoxProvider : DramaProvider {
         .build()
 
     private val chapterIndexMap = ConcurrentHashMap<String, Int>()
-    private val batchCache = ConcurrentHashMap<String, PlaybackSource>()
+    private data class RawChapterSource(
+        val rawUrl: String,
+        val subtitles: List<SubtitleTrack>,
+        val audios: List<AudioTrack>
+    )
+    private val rawChapterCache = ConcurrentHashMap<String, RawChapterSource>()
+    private val resolvedPlaybackCache = ConcurrentHashMap<String, PlaybackSource>()
 
     override suspend fun getTabs(): List<TabSpec> = listOf(
         TabSpec("trending", "Sedang Tren", isDefault = true),
@@ -198,7 +204,10 @@ class DramaBoxProvider : DramaProvider {
 
     override suspend fun resolvePlayback(mediaId: String, episodeId: String): PlaybackSource =
         withContext(Dispatchers.IO) {
-            batchCache["$mediaId:$episodeId"]?.let { return@withContext it }
+            resolvedPlaybackCache["$mediaId:$episodeId"]?.let { return@withContext it }
+            rawChapterCache["$mediaId:$episodeId"]?.let { raw ->
+                return@withContext materializePlayback(mediaId, episodeId, raw)
+            }
             val chIdx = chapterIndexMap["$mediaId:$episodeId"] ?: 0
 
             val batch = execPost(
@@ -209,21 +218,21 @@ class DramaBoxProvider : DramaProvider {
                 }
             )
             val bList = batch.optJSONObject("data")?.optJSONArray("chapterList")
-            var matched: JSONObject? = null
+            var matchedRaw: RawChapterSource? = null
             if (bList != null) {
                 for (i in 0 until bList.length()) {
                     val ch = bList.optJSONObject(i) ?: continue
                     val cid = ch.optString("chapterId")
+                    val raw = extractRawFromChapter(ch) ?: continue
+                    if (cid.isNotBlank()) rawChapterCache["$mediaId:$cid"] = raw
                     if (cid == episodeId || ch.optInt("chapterIndex", -1) == chIdx) {
-                        matched = ch
+                        matchedRaw = raw
                     }
-                    val src = extractPlaybackFromChapter(mediaId, cid, ch)
-                    if (src != null) batchCache["$mediaId:$cid"] = src
                 }
             }
 
-            if (matched != null) {
-                extractPlaybackFromChapter(mediaId, episodeId, matched)?.let { return@withContext it }
+            if (matchedRaw != null) {
+                return@withContext materializePlayback(mediaId, episodeId, matchedRaw)
             }
 
             val single = execPost(
@@ -297,11 +306,7 @@ class DramaBoxProvider : DramaProvider {
             PlaybackSource(streamUrl = "")
         }
 
-    private fun extractPlaybackFromChapter(
-        mediaId: String,
-        episodeId: String,
-        ch: JSONObject
-    ): PlaybackSource? {
+    private fun extractRawFromChapter(ch: JSONObject): RawChapterSource? {
         var rawUrl = ""
         val cdns = ch.optJSONArray("cdnList")
         if (cdns != null && cdns.length() > 0) {
@@ -325,12 +330,6 @@ class DramaBoxProvider : DramaProvider {
         }
         if (rawUrl.isBlank()) rawUrl = ch.optString("videoPath")
         if (rawUrl.isBlank()) return null
-
-        val playableUrl = if (rawUrl.contains(".encrypt")) {
-            AliyunEcbDecryptor.preparePlayableUrl("${mediaId}_$episodeId", rawUrl, client)
-        } else {
-            rawUrl
-        }
 
         val subs = buildList {
             val sArr = ch.optJSONArray("subTitleList") ?: JSONArray()
@@ -365,13 +364,37 @@ class DramaBoxProvider : DramaProvider {
                 )
             }
         }
+        return RawChapterSource(rawUrl = rawUrl, subtitles = subs, audios = audios)
+    }
 
-        return PlaybackSource(
+    private fun materializePlayback(
+        mediaId: String,
+        episodeId: String,
+        raw: RawChapterSource
+    ): PlaybackSource {
+        resolvedPlaybackCache["$mediaId:$episodeId"]?.let { return it }
+        val playableUrl = if (raw.rawUrl.contains(".encrypt")) {
+            AliyunEcbDecryptor.preparePlayableUrl("${mediaId}_$episodeId", raw.rawUrl, client)
+        } else {
+            raw.rawUrl
+        }
+        val source = PlaybackSource(
             streamUrl = playableUrl,
             headers = mapOf("User-Agent" to "DramaBox/7.0.0 (Android)"),
-            subtitles = subs,
-            audioTracks = audios
+            subtitles = raw.subtitles,
+            audioTracks = raw.audios
         )
+        resolvedPlaybackCache["$mediaId:$episodeId"] = source
+        return source
+    }
+
+    private fun extractPlaybackFromChapter(
+        mediaId: String,
+        episodeId: String,
+        ch: JSONObject
+    ): PlaybackSource? {
+        val raw = extractRawFromChapter(ch) ?: return null
+        return materializePlayback(mediaId, episodeId, raw)
     }
 
     private fun collectRecommendBooks(pageNo: Int, out: MutableList<JSONObject>) {

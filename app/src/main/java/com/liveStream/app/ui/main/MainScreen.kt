@@ -109,7 +109,24 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import android.app.Activity
+import android.view.LayoutInflater
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import com.liveStream.app.R
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material.icons.rounded.VolumeUp
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
+import com.liveStream.app.core.VideoCodecSupport
+import com.liveStream.app.ui.tv.tvShimmerBrush
+import com.liveStream.contract.PlaybackSource
+import kotlinx.coroutines.Dispatchers
 import com.liveStream.app.BuildConfig
 import com.liveStream.app.core.InMemoryMediaStore
 import com.liveStream.app.core.NativeCore
@@ -233,6 +250,7 @@ fun MainScreen(
                             items = state.forYouItems,
                             favorites = state.favorites,
                             initialPage = state.forYouPageIndex,
+                            refreshToken = state.forYouRefreshToken,
                             isVisible = state.bottomTab == BottomNavTab.FOR_YOU,
                             isLoading = state.forYouLoading,
                             onIntent = viewModel::onIntent,
@@ -447,6 +465,10 @@ private fun DiscoverPage(
                     )
                 }
             }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { onIntent(MainIntent.Refresh) }) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "Muat ulang", tint = TextSecondary)
+            }
         }
 
         Spacer(Modifier.height(6.dp))
@@ -522,9 +544,7 @@ private fun DiscoverPage(
         Spacer(Modifier.height(10.dp))
 
         if (state.isLoading && state.items.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = AccentRed)
-            }
+            MobileDiscoverSkeleton(modifier = Modifier.fillMaxSize())
         } else {
             val gridState = rememberLazyGridState()
             val shouldLoadMore by remember(state.items.size, state.hasMore, state.isLoadingMore) {
@@ -537,6 +557,9 @@ private fun DiscoverPage(
                 if (shouldLoadMore) onIntent(MainIntent.LoadNextPage)
             }
 
+            val featured = if (state.searchQuery.isBlank() && state.items.size > 3) state.items.firstOrNull() else null
+            val gridItems = if (featured != null) state.items.drop(1) else state.items
+
             LazyVerticalGrid(
                 state = gridState,
                 columns = GridCells.Adaptive(minSize = 112.dp),
@@ -545,7 +568,16 @@ private fun DiscoverPage(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(state.items, key = { "${it.providerId}:${it.mediaId}" }) { item ->
+                if (featured != null) {
+                    item(key = "mobile_featured_${featured.mediaId}", span = { GridItemSpan(maxLineSpan) }) {
+                        MobileFeaturedBanner(
+                            item = featured,
+                            providerName = activeProvider?.displayName.orEmpty(),
+                            onClick = { onOpenPlayer(featured) }
+                        )
+                    }
+                }
+                items(gridItems, key = { "${it.providerId}:${it.mediaId}" }) { item ->
                     PosterCard(item = item, onClick = { onOpenPlayer(item) })
                 }
                 if (state.isLoadingMore) {
@@ -564,7 +596,162 @@ private fun DiscoverPage(
 }
 
 @Composable
+private fun MobileDiscoverSkeleton(modifier: Modifier = Modifier) {
+    val shimmer = tvShimmerBrush()
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(bottom = 16.dp),
+        modifier = modifier
+    ) {
+        item(span = { GridItemSpan(3) }) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(152.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(SurfaceCard)
+                    .border(1.dp, BorderSubtle, RoundedCornerShape(14.dp))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(92.dp)
+                        .height(128.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(shimmer)
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Box(Modifier.width(72.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(shimmer))
+                    Spacer(Modifier.height(8.dp))
+                    Box(Modifier.fillMaxWidth(0.9f).height(18.dp).clip(RoundedCornerShape(6.dp)).background(shimmer))
+                    Spacer(Modifier.height(8.dp))
+                    Box(Modifier.fillMaxWidth(0.7f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmer))
+                    Spacer(Modifier.height(14.dp))
+                    Box(Modifier.width(104.dp).height(32.dp).clip(RoundedCornerShape(16.dp)).background(shimmer))
+                }
+            }
+        }
+        items(9) {
+            Column {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(3f / 4f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(shimmer)
+                )
+                Spacer(Modifier.height(6.dp))
+                Box(Modifier.fillMaxWidth(0.85f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmer))
+                Spacer(Modifier.height(4.dp))
+                Box(Modifier.fillMaxWidth(0.5f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(shimmer))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MobileFeaturedBanner(
+    item: MediaItem,
+    providerName: String,
+    onClick: () -> Unit
+) {
+    val shimmer = tvShimmerBrush()
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+                Brush.horizontalGradient(listOf(SurfaceElevated, SurfaceCard))
+            )
+            .border(1.dp, BorderSubtle, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(12.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .width(92.dp)
+                .aspectRatio(3f / 4f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceCard)
+        ) {
+            SubcomposeAsyncImage(
+                model = item.coverUrl,
+                contentDescription = item.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                when (painter.state) {
+                    is AsyncImagePainter.State.Success -> SubcomposeAsyncImageContent()
+                    else -> Box(Modifier.fillMaxSize().background(shimmer))
+                }
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (providerName.isNotBlank()) {
+                    Text(
+                        text = providerName,
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(AccentRed)
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                if (item.totalEpisodes > 0) {
+                    Text("${item.totalEpisodes} Ep", color = AccentGold, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = item.title,
+                color = TextPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (item.description.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = item.description,
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(AccentRed)
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Tonton Sekarang", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
 private fun PosterCard(item: MediaItem, onClick: () -> Unit) {
+    val shimmer = tvShimmerBrush()
+    var retryCount by remember(item.coverUrl) { mutableIntStateOf(0) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -577,19 +764,43 @@ private fun PosterCard(item: MediaItem, onClick: () -> Unit) {
                 .aspectRatio(3f / 4f)
                 .clip(RoundedCornerShape(10.dp))
                 .background(SurfaceCard)
+                .border(0.5.dp, BorderSubtle, RoundedCornerShape(10.dp))
         ) {
             if (item.coverUrl.isNotBlank()) {
-                AsyncImage(
-                    model = item.coverUrl,
+                SubcomposeAsyncImage(
+                    model = if (retryCount == 0) item.coverUrl else "${item.coverUrl}${if ('?' in item.coverUrl) '&' else '?'}r=$retryCount",
                     contentDescription = item.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
-                )
+                ) {
+                    when (painter.state) {
+                        is AsyncImagePainter.State.Success -> SubcomposeAsyncImageContent()
+                        is AsyncImagePainter.State.Error -> {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(SurfaceElevated)
+                                    .clickable { retryCount += 1 },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = "Muat ulang", tint = TextSecondary, modifier = Modifier.size(24.dp))
+                            }
+                        }
+                        else -> Box(Modifier.fillMaxSize().background(shimmer))
+                    }
+                }
             } else {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(34.dp))
                 }
             }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(42.dp)
+                    .align(Alignment.BottomCenter)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xBB0A0B0F))))
+            )
             if (!item.badge.isNullOrBlank()) {
                 Text(
                     text = item.badge!!,
@@ -641,6 +852,7 @@ private fun ForYouPagerPage(
     items: List<MediaItem>,
     favorites: List<MediaItem>,
     initialPage: Int,
+    refreshToken: Int,
     isVisible: Boolean,
     isLoading: Boolean,
     onIntent: (MainIntent) -> Unit,
@@ -662,12 +874,17 @@ private fun ForYouPagerPage(
             val safeInitial = initialPage.coerceIn(0, (items.size - 1).coerceAtLeast(0))
             val pagerState = rememberPagerState(initialPage = safeInitial, pageCount = { items.size })
             val exoPlayer = remember {
-                ExoPlayer.Builder(context).build().apply {
+                ExoPlayer.Builder(context, VideoCodecSupport.createTvRenderersFactory(context)).build().apply {
                     repeatMode = Player.REPEAT_MODE_OFF
                 }
             }
+            val preResolvedClips = remember { mutableMapOf<String, PlaybackSource>() }
             var activePlayingKey by remember { mutableStateOf("") }
             var isPaused by remember { mutableStateOf(false) }
+            var isMuted by remember { mutableStateOf(false) }
+            var isClipBuffering by remember { mutableStateOf(true) }
+            var firstFrameRendered by remember { mutableStateOf(false) }
+            var pullDragAccum by remember { mutableStateOf(0f) }
             var currentPosMs by remember { mutableStateOf(0L) }
             var durationMs by remember { mutableStateOf(0L) }
             var playbackSpeed by remember { mutableStateOf(1.0f) }
@@ -695,8 +912,13 @@ private fun ForYouPagerPage(
 
             DisposableEffect(exoPlayer) {
                 val listener = object : Player.Listener {
+                    override fun onRenderedFirstFrame() {
+                        firstFrameRendered = true
+                        isClipBuffering = false
+                    }
                     override fun onPlaybackStateChanged(playbackState: Int) {
-                        if (playbackState == Player.STATE_ENDED && isVisible) {
+                        isClipBuffering = playbackState == Player.STATE_BUFFERING
+                        if (playbackState == Player.STATE_ENDED && isVisible && !isPaused) {
                             val next = pagerState.currentPage + 1
                             if (next < items.size) {
                                 scope.launch { pagerState.animateScrollToPage(next) }
@@ -723,6 +945,12 @@ private fun ForYouPagerPage(
                 onIntent(MainIntent.SetForYouPage(pagerState.currentPage))
             }
 
+            LaunchedEffect(refreshToken) {
+                if (refreshToken > 0 && items.isNotEmpty()) {
+                    pagerState.scrollToPage(0)
+                }
+            }
+
             LaunchedEffect(isVisible) {
                 if (!isVisible) {
                     exoPlayer.playWhenReady = false
@@ -742,29 +970,84 @@ private fun ForYouPagerPage(
                 }
                 activePlayingKey = ""
                 isPaused = false
+                isClipBuffering = true
+                firstFrameRendered = false
                 currentPosMs = 0L
                 durationMs = 0L
                 exoPlayer.stop()
 
-                val provider = ProviderRegistry.get(item.providerId)
-                val eps = runCatching { provider.getEpisodes(item.mediaId).episodes }.getOrDefault(emptyList())
-                val firstEp = eps.firstOrNull { !it.isLocked } ?: return@LaunchedEffect
-                val src = runCatching { provider.resolvePlayback(item.mediaId, firstEp.episodeId) }.getOrNull()
-                    ?: return@LaunchedEffect
-                if (src.streamUrl.isNotBlank() && isVisible) {
+                val cached = preResolvedClips[key]
+                val src = cached ?: run {
+                    val provider = ProviderRegistry.get(item.providerId)
+                    val eps = runCatching { provider.getEpisodes(item.mediaId).episodes }.getOrDefault(emptyList())
+                    val firstEp = eps.firstOrNull { !it.isLocked }
+                    if (firstEp == null) {
+                        isClipBuffering = false
+                        return@LaunchedEffect
+                    }
+                    runCatching { provider.resolvePlayback(item.mediaId, firstEp.episodeId) }.getOrNull()
+                }
+                if (src == null || src.streamUrl.isBlank()) {
+                    isClipBuffering = false
+                    return@LaunchedEffect
+                }
+                preResolvedClips[key] = src
+                if (isVisible) {
                     val dsFactory = InMemoryMediaStore.createDataSourceFactory(src.headers)
                     val baseSource = DefaultMediaSourceFactory(dsFactory)
                         .createMediaSource(ExoMediaItem.fromUri(src.streamUrl))
                     val mediaSource = ClippingMediaSource(baseSource, PREVIEW_CLIP_MS * 1000L)
                     exoPlayer.setMediaSource(mediaSource)
                     exoPlayer.setPlaybackSpeed(playbackSpeed)
+                    exoPlayer.volume = if (isMuted) 0f else 1f
                     exoPlayer.prepare()
                     exoPlayer.playWhenReady = true
                     activePlayingKey = key
+
+                    // Pre-resolve cuplikan berikutnya di background agar swipe instan tanpa jeda
+                    val nextItem = items.getOrNull(pagerState.currentPage + 1)
+                    if (nextItem != null) {
+                        val nextKey = "${nextItem.providerId}:${nextItem.mediaId}"
+                        if (!preResolvedClips.containsKey(nextKey)) {
+                            scope.launch(Dispatchers.IO) {
+                                runCatching {
+                                    val np = ProviderRegistry.get(nextItem.providerId)
+                                    val neps = np.getEpisodes(nextItem.mediaId).episodes
+                                    val nfirst = neps.firstOrNull { !it.isLocked } ?: return@runCatching
+                                    val nsrc = np.resolvePlayback(nextItem.mediaId, nfirst.episodeId)
+                                    if (nsrc.streamUrl.isNotBlank()) {
+                                        preResolvedClips[nextKey] = nsrc
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
-            VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { idx ->
+            VerticalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(pagerState.currentPage, isLoading) {
+                        detectVerticalDragGestures(
+                            onDragEnd = {
+                                if (pagerState.currentPage == 0 && pullDragAccum > 140f && !isLoading) {
+                                    onIntent(MainIntent.RefreshForYou)
+                                }
+                                pullDragAccum = 0f
+                            },
+                            onDragCancel = { pullDragAccum = 0f },
+                            onVerticalDrag = { _, dragAmount ->
+                                if (pagerState.currentPage == 0 && dragAmount > 0f) {
+                                    pullDragAccum = (pullDragAccum + dragAmount).coerceAtMost(280f)
+                                } else if (dragAmount < 0f) {
+                                    pullDragAccum = 0f
+                                }
+                            }
+                        )
+                    }
+            ) { idx ->
                 val item = items[idx]
                 val isCurrent = idx == pagerState.currentPage && activePlayingKey == "${item.providerId}:${item.mediaId}"
                 val isSaved = favorites.any { it.providerId == item.providerId && it.mediaId == item.mediaId }
@@ -780,7 +1063,24 @@ private fun ForYouPagerPage(
                             }
                         }
                 ) {
-                    if (item.coverUrl.isNotBlank()) {
+                    if (isCurrent) {
+                        AndroidView(
+                            factory = { ctx ->
+                                (LayoutInflater.from(ctx).inflate(R.layout.view_texture_player, null) as PlayerView).apply {
+                                    useController = false
+                                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                    player = exoPlayer
+                                }
+                            },
+                            update = { pv ->
+                                if (pv.player !== exoPlayer) pv.player = exoPlayer
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    // Tahan poster di atas TextureView sampai frame pertama video benar-benar ter-render (anti layar hitam!)
+                    if ((!isCurrent || !firstFrameRendered) && item.coverUrl.isNotBlank()) {
                         AsyncImage(
                             model = item.coverUrl,
                             contentDescription = item.title,
@@ -789,18 +1089,42 @@ private fun ForYouPagerPage(
                         )
                     }
 
-                    if (isCurrent) {
-                        AndroidView(
-                            factory = { ctx ->
-                                PlayerView(ctx).apply {
-                                    useController = false
-                                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                    player = exoPlayer
-                                }
-                            },
-                            update = { it.player = exoPlayer },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                    // Indikator visual tengah: Pause atau Menyiapkan Cuplikan
+                    if (idx == pagerState.currentPage) {
+                        if (isPaused && isCurrent) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .size(64.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x990A0B0F))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.PlayArrow,
+                                    contentDescription = "Lanjutkan",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            }
+                        } else if (!isCurrent || isClipBuffering) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(Color(0xAA0A0B0F))
+                                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    color = AccentRed,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Menyiapkan cuplikan...", color = Color.White, fontSize = 12.sp)
+                            }
+                        }
                     }
 
                     // Gradient overlay bawah
@@ -950,14 +1274,50 @@ private fun ForYouPagerPage(
                         }
                     }
 
-                    // Aksi Koleksi di kanan bawah
+                    // Aksi Kanan Bawah (Mute, Speed, Koleksi)
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(end = 14.dp, bottom = 28.dp)
+                            .padding(end = 14.dp, bottom = 36.dp)
                     ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable {
+                                isMuted = !isMuted
+                                exoPlayer.volume = if (isMuted) 0f else 1f
+                            }
+                        ) {
+                            Icon(
+                                imageVector = if (isMuted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
+                                contentDescription = "Suara",
+                                tint = Color.White,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Text(if (isMuted) "Bisu" else "Suara", color = Color.White, fontSize = 10.sp)
+                        }
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable {
+                                val nextSpeed = when (playbackSpeed) {
+                                    1.0f -> 1.25f
+                                    1.25f -> 1.5f
+                                    1.5f -> 2.0f
+                                    else -> 1.0f
+                                }
+                                playbackSpeed = nextSpeed
+                                exoPlayer.setPlaybackSpeed(nextSpeed)
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Speed,
+                                contentDescription = "Kecepatan",
+                                tint = if (playbackSpeed != 1.0f) AccentGold else Color.White,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Text("${playbackSpeed}x", color = if (playbackSpeed != 1.0f) AccentGold else Color.White, fontSize = 10.sp)
+                        }
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.clickable { onIntent(MainIntent.ToggleFavorite(item)) }
@@ -976,6 +1336,24 @@ private fun ForYouPagerPage(
                         }
                     }
                 }
+            }
+        }
+
+        // Indikator tarik-dari-atas (Pull-to-Refresh) tanpa tombol reload manual
+        if (isLoading && items.isNotEmpty()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 56.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color(0xCC0A0B0F))
+                    .padding(horizontal = 14.dp, vertical = 6.dp)
+            ) {
+                CircularProgressIndicator(color = AccentRed, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Memuat cuplikan terbaru...", color = Color.White, fontSize = 11.sp)
             }
         }
 

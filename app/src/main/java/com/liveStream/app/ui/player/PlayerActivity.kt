@@ -1,7 +1,13 @@
 package com.liveStream.app.ui.player
 
+import android.content.Intent
 import android.net.Uri
+import com.liveStream.app.core.TvDeviceHelper
+import com.liveStream.app.ui.tv.TvPlayerScreen
 import android.os.Bundle
+import android.view.LayoutInflater
+import com.liveStream.app.R
+import com.liveStream.app.core.VideoCodecSupport
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -109,18 +115,47 @@ class PlayerActivity : ComponentActivity() {
         val startEpisodeIndex = intent.getIntExtra("EXTRA_START_EPISODE_INDEX", 0).coerceAtLeast(0)
         val startPositionMs = intent.getLongExtra("EXTRA_START_POSITION_MS", 0L).coerceAtLeast(0L)
 
+        val isTv = TvDeviceHelper.isTvDevice(this)
         setContent {
             LiveStreamTheme {
-                FullScreenVerticalPlayer(
-                    providerId = providerId,
-                    mediaId = mediaId,
-                    title = title,
-                    coverUrl = coverUrl,
-                    totalEpisodes = totalEpisodes,
-                    initialEpisodeIndex = startEpisodeIndex,
-                    initialStartPosMs = startPositionMs,
-                    onBack = { finish() }
-                )
+                if (isTv) {
+                    TvPlayerScreen(
+                        providerId = providerId,
+                        mediaId = mediaId,
+                        title = title,
+                        coverUrl = coverUrl,
+                        totalEpisodes = totalEpisodes,
+                        initialEpisodeIndex = startEpisodeIndex,
+                        initialStartPosMs = startPositionMs,
+                        onSwitchDrama = { nextItem ->
+                            val hist = WatchHistoryStore.find(this, nextItem.providerId, nextItem.mediaId)
+                            startActivity(
+                                Intent(this, PlayerActivity::class.java).apply {
+                                    putExtra("EXTRA_PROVIDER_ID", nextItem.providerId)
+                                    putExtra("EXTRA_MEDIA_ID", nextItem.mediaId)
+                                    putExtra("EXTRA_TITLE", nextItem.title)
+                                    putExtra("EXTRA_COVER_URL", nextItem.coverUrl)
+                                    putExtra("EXTRA_TOTAL_EPISODES", nextItem.totalEpisodes)
+                                    putExtra("EXTRA_START_EPISODE_INDEX", hist?.episodeIndex ?: 0)
+                                    putExtra("EXTRA_START_POSITION_MS", hist?.positionMs ?: 0L)
+                                }
+                            )
+                            finish()
+                        },
+                        onBack = { finish() }
+                    )
+                } else {
+                    FullScreenVerticalPlayer(
+                        providerId = providerId,
+                        mediaId = mediaId,
+                        title = title,
+                        coverUrl = coverUrl,
+                        totalEpisodes = totalEpisodes,
+                        initialEpisodeIndex = startEpisodeIndex,
+                        initialStartPosMs = startPositionMs,
+                        onBack = { finish() }
+                    )
+                }
             }
         }
     }
@@ -170,8 +205,8 @@ private fun FullScreenVerticalPlayer(
     var pendingStartPosMs by remember { mutableStateOf(initialStartPosMs) }
 
     val exoPlayer = remember {
-        ExoPlayer.Builder(context).apply {
-            // Default prioritas bahasa Indonesia untuk Audio & Subtitle
+        ExoPlayer.Builder(context, VideoCodecSupport.createTvRenderersFactory(context)).apply {
+            // Default prioritas bahasa Indonesia untuk Audio & Subtitle + decoder fallback
         }.build().apply {
             trackSelectionParameters = trackSelectionParameters
                 .buildUpon()
@@ -430,7 +465,7 @@ private fun FullScreenVerticalPlayer(
                 if (isCurrent && !playback?.streamUrl.isNullOrBlank()) {
                     AndroidView(
                         factory = { ctx ->
-                            PlayerView(ctx).apply {
+                            (LayoutInflater.from(ctx).inflate(R.layout.view_texture_player, null) as PlayerView).apply {
                                 useController = false
                                 resizeMode = if (isFullZoom) {
                                     AspectRatioFrameLayout.RESIZE_MODE_ZOOM

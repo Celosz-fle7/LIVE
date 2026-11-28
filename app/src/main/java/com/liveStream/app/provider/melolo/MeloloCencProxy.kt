@@ -20,7 +20,7 @@ object MeloloCencProxy {
 
     private const val TAG = "MeloloCenc"
 
-    private data class CencSample(val offset: Long, val size: Int, val iv8: ByteArray)
+    private data class CencSample(val offset: Long, val size: Int, val iv16: ByteArray, val ctrStartByte: Int = 0)
 
     fun preparePlayableUrl(
         cacheKey: String,
@@ -104,9 +104,14 @@ object MeloloCencProxy {
         }
         samples.sortBy { it.offset }
 
+        val hasAv1C = findBox(moov, "av1C", 0, moov.size) >= 0
         val hasHvcC = findBox(moov, "hvcC", 0, moov.size) >= 0
         val hasAvcC = findBox(moov, "avcC", 0, moov.size) >= 0
-        val fourCC = if (hasHvcC && !hasAvcC) "hvc1" else "avc1"
+        val fourCC = when {
+            hasAv1C && !hasAvcC && !hasHvcC -> "av01"
+            hasHvcC && !hasAvcC -> "hvc1"
+            else -> "avc1"
+        }
         replaceBoxType(moov, "encv", fourCC, 0, moov.size)
         replaceBoxType(moov, "enca", "mp4a", 0, moov.size)
         for (drmBox in listOf("sinf", "senc", "saio", "saiz", "schm", "schi", "tenc", "pssh")) {
@@ -123,7 +128,7 @@ object MeloloCencProxy {
         if (stszPos < 0 || stcoPos < 0 || stscPos < 0 || sencPos < 0) return emptyList()
 
         val sencFlags = readU32(moov, sencPos + 4) and 0x00FFFFFF
-        if ((sencFlags and 0x02) != 0) return emptyList() // fallback for subsample
+        val hasSubsamples = (sencFlags and 0x02) != 0
 
         val fixedSize = readU32(moov, stszPos + 8)
         val scnt = readU32(moov, stszPos + 12)
@@ -141,7 +146,7 @@ object MeloloCencProxy {
             intArrayOf(readU32(moov, b), readU32(moov, b + 4))
         }
 
-        val out = ArrayList<CencSample>(scnt)
+        val sampleOffsets = LongArray(scnt)
         var sIdx = 0
         for (cIdx in 0 until ccnt) {
             val chunkNo = cIdx + 1
@@ -150,15 +155,69 @@ object MeloloCencProxy {
             var off = chunks[cIdx].toLong() and 0xFFFFFFFFL
             for (s in 0 until spc) {
                 if (sIdx < scnt) {
-                    val ivOff = sencPos + 12 + sIdx * 8
-                    if (ivOff + 8 > moov.size) return emptyList()
-                    out.add(CencSample(off, sizes[sIdx], moov.copyOfRange(ivOff, ivOff + 8)))
+                    sampleOffsets[sIdx] = off
                     off += sizes[sIdx]
                     sIdx++
                 }
             }
         }
+
+        // Deteksi Per_Sample_IV_Size (8 atau 16 byte) dari box tenc agar tidak meleset
+        val tencPos = findBox(moov, "tenc", trakPos, trakEnd)
+        val ivSize = if (tencPos >= 0 && tencPos + 12 < trakEnd) {
+            val sz = moov[tencPos + 11].toInt() and 0xFF
+            if (sz == 16) 16 else 8
+        } else {
+            8
+        }
+
+        val out = ArrayList<CencSample>(scnt)
+        var sencCursor = sencPos + 12
+        for (i in 0 until scnt) {
+            if (sencCursor + ivSize > moov.size) return emptyList()
+            val iv16 = ByteArray(16)
+            moov.copyInto(iv16, 0, sencCursor, sencCursor + ivSize)
+            sencCursor += ivSize
+            val baseOff = sampleOffsets[i]
+            val sampleSize = sizes[i]
+            if (!hasSubsamples) {
+                if (sampleSize > 0) {
+                    out.add(CencSample(baseOff, sampleSize, iv16, ctrStartByte = 0))
+                }
+            } else {
+                if (sencCursor + 2 > moov.size) return emptyList()
+                val subCount = readU16(moov, sencCursor)
+                sencCursor += 2
+                var curOff = baseOff
+                var ctrByte = 0
+                for (sub in 0 until subCount) {
+                    if (sencCursor + 6 > moov.size) return emptyList()
+                    val clearBytes = readU16(moov, sencCursor)
+                    val encBytes = readU32(moov, sencCursor + 2)
+                    sencCursor += 6
+                    curOff += clearBytes
+                    if (encBytes > 0) {
+                        out.add(CencSample(curOff, encBytes, iv16, ctrStartByte = ctrByte))
+                        curOff += encBytes
+                        ctrByte += encBytes
+                    }
+                }
+            }
+        }
         return out
+    }
+
+    private fun addCounterToIv(baseIv16: ByteArray, blockDelta: Long, outIv16: ByteArray) {
+        baseIv16.copyInto(outIv16, 0, 0, 16)
+        if (blockDelta == 0L) return
+        var carry = blockDelta
+        var i = 15
+        while (i >= 8 && carry > 0L) {
+            val sum = (outIv16[i].toInt() and 0xFF) + (carry and 0xFFL)
+            outIv16[i] = (sum and 0xFFL).toByte()
+            carry = (carry ushr 8) + (sum ushr 8)
+            i--
+        }
     }
 
     private fun decryptChunkCtrInPlace(
@@ -170,10 +229,9 @@ object MeloloCencProxy {
         if (chunk.isEmpty() || samples.isEmpty()) return
         val rangeStart = fileOffset
         val rangeEnd = fileOffset + chunk.size
-        val ecb = Cipher.getInstance("AES/ECB/NoPadding")
-        ecb.init(Cipher.ENCRYPT_MODE, keySpec)
+        val ctrCipher = Cipher.getInstance("AES/CTR/NoPadding")
         val counterBlock = ByteArray(16)
-        val keyStream = ByteArray(16)
+        val scratchBlock = ByteArray(16)
 
         // Binary search first sample with offset + size > rangeStart
         var lo = 0
@@ -196,25 +254,29 @@ object MeloloCencProxy {
             val sEnd = s.offset + s.size
             val overlapStart = maxOf(s.offset, rangeStart)
             val overlapEnd = minOf(sEnd, rangeEnd)
-            val overlapLen = (overlapEnd - overlapStart).toInt()
-            var posInSample = (overlapStart - s.offset).toInt()
-            var done = 0
+            var overlapLen = (overlapEnd - overlapStart).toInt()
+            var outPos = (overlapStart - rangeStart).toInt()
+            var posInSample = s.ctrStartByte + (overlapStart - s.offset).toInt()
 
-            while (done < overlapLen) {
-                val blockIdx = (posInSample / 16).toLong()
-                val blockOff = posInSample % 16
-                val take = minOf(16 - blockOff, overlapLen - done)
-                s.iv8.copyInto(counterBlock, 0)
-                for (k in 0 until 8) {
-                    counterBlock[8 + k] = ((blockIdx ushr ((7 - k) * 8)) and 0xFFL).toByte()
+            val blockIdx = (posInSample / 16).toLong()
+            val blockOff = posInSample % 16
+            addCounterToIv(s.iv16, blockIdx, counterBlock)
+            ctrCipher.init(Cipher.DECRYPT_MODE, keySpec, IvParameterSpec(counterBlock))
+
+            if (blockOff != 0) {
+                // Skip prefix bytes inside the first 16-byte CTR block without per-block ECB calls
+                scratchBlock.fill(0)
+                val headTake = minOf(16 - blockOff, overlapLen)
+                chunk.copyInto(scratchBlock, blockOff, outPos, outPos + headTake)
+                val decHead = ctrCipher.update(scratchBlock, 0, 16)
+                if (decHead != null && decHead.size >= blockOff + headTake) {
+                    decHead.copyInto(chunk, outPos, blockOff, blockOff + headTake)
                 }
-                ecb.doFinal(counterBlock, 0, 16, keyStream, 0)
-                val outPos = (overlapStart - rangeStart).toInt() + done
-                for (j in 0 until take) {
-                    chunk[outPos + j] = (chunk[outPos + j].toInt() xor keyStream[blockOff + j].toInt()).toByte()
-                }
-                posInSample += take
-                done += take
+                outPos += headTake
+                overlapLen -= headTake
+            }
+            if (overlapLen > 0) {
+                ctrCipher.doFinal(chunk, outPos, overlapLen, chunk, outPos)
             }
         }
     }
