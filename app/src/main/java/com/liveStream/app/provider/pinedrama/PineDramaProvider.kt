@@ -69,7 +69,7 @@ class PineDramaProvider : DramaProvider {
     }
 
     override suspend fun getForYouTabs(): List<TabSpec> = listOf(
-        TabSpec("5", "Mini Drama", isDefault = true),
+        TabSpec("mini_drama", "Mini Drama", isDefault = true),
         TabSpec("anime", "Anime")
     )
 
@@ -77,8 +77,144 @@ class PineDramaProvider : DramaProvider {
         if (tabId == "anime") {
             getFilteredFeed(listOf(FilterSelection("ladder_0", "7628991192537158672", 2)), cursor)
         } else {
-            getFeed(tabId = "5", cursor = cursor)
+            fetchMiniDramaSwipeFeed(cursor)
         }
+
+    private suspend fun fetchMiniDramaSwipeFeed(cursor: String): FeedPage = withContext(Dispatchers.IO) {
+        val pullType = if (cursor.isBlank()) "0" else "2"
+        val url = buildUrl(
+            "/tiktok/md/mini_drama/feed/v1/",
+            mapOf(
+                "count" to "10",
+                "pull_type" to pullType,
+                "series_feed_type" to "501"
+            )
+        )
+        val raw = execGetBytes(url)
+        if (raw.isEmpty()) return@withContext FeedPage(emptyList(), "", false)
+        parseMiniDramaFeedProtobuf(raw, cursor)
+    }
+
+    private fun parseMiniDramaFeedProtobuf(raw: ByteArray, cursor: String): FeedPage {
+        var hasMore = false
+        val items = mutableListOf<MediaItem>()
+        val seenIds = HashSet<String>()
+
+        forEachProtoField(raw, 0, raw.size) { fn, wt, vStart, vEnd, varintVal ->
+            if (fn == 3 && wt == 0) {
+                hasMore = varintVal != 0L
+            } else if (fn == 4 && wt == 2) {
+                var cid = ""
+                var title = ""
+                var totalEps = 0
+                val tags = mutableListOf<String>()
+                val coverUrls = mutableListOf<String>()
+
+                forEachProtoField(raw, vStart, vEnd) { afn, awt, avStart, avEnd, _ ->
+                    if (afn == 317 && awt == 2) {
+                        forEachProtoField(raw, avStart, avEnd) { sfn, swt, svStart, svEnd, sVar ->
+                            when {
+                                sfn == 1 && swt == 0 -> cid = sVar.toString()
+                                sfn == 13 && swt == 2 -> title = String(raw, svStart, svEnd - svStart, Charsets.UTF_8)
+                                sfn == 26 && swt == 2 -> {
+                                    val tag = String(raw, svStart, svEnd - svStart, Charsets.UTF_8).trim()
+                                    if (tag.isNotEmpty()) tags.add(tag)
+                                }
+                                sfn == 27 && swt == 2 -> {
+                                    forEachProtoField(raw, svStart, svEnd) { cfn, cwt, cvStart, cvEnd, _ ->
+                                        if (cfn == 2 && cwt == 2) {
+                                            coverUrls.add(String(raw, cvStart, cvEnd - cvStart, Charsets.UTF_8))
+                                        }
+                                    }
+                                }
+                                sfn == 31 && swt == 2 && totalEps <= 0 -> {
+                                    val extraJson = String(raw, svStart, svEnd - svStart, Charsets.UTF_8)
+                                    val n = runCatching { JSONObject(extraJson).optInt("video_total_nums", 0) }.getOrDefault(0)
+                                    if (n > 0) totalEps = n
+                                }
+                                sfn == 30 && swt == 2 && totalEps <= 0 -> {
+                                    val epText = String(raw, svStart, svEnd - svStart, Charsets.UTF_8)
+                                    val num = Regex("""(\d+)""").find(epText)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                                    if (num > 0) totalEps = num
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (cid.isNotBlank() && title.isNotBlank() && seenIds.add(cid)) {
+                    if (totalEps > 0) totalEpisodeCache[cid] = totalEps
+                    val cover = coverUrls.firstOrNull { it.contains(".jpeg") } ?: coverUrls.firstOrNull().orEmpty()
+                    items.add(
+                        MediaItem(
+                            providerId = id,
+                            mediaId = cid,
+                            title = title,
+                            coverUrl = cover,
+                            tags = tags,
+                            totalEpisodes = totalEps
+                        )
+                    )
+                }
+            }
+        }
+
+        val nextCursor = if (hasMore && items.isNotEmpty()) ((cursor.toIntOrNull() ?: 0) + 1).toString() else ""
+        return FeedPage(items = items, nextCursor = nextCursor, hasMore = nextCursor.isNotEmpty())
+    }
+
+    private inline fun forEachProtoField(
+        buf: ByteArray,
+        start: Int,
+        end: Int,
+        onField: (fieldNumber: Int, wireType: Int, valStart: Int, valEnd: Int, varintVal: Long) -> Unit
+    ) {
+        var pos = start
+        while (pos < end) {
+            val (tag, nextPos) = readVarint(buf, pos, end)
+            if (nextPos <= pos) break
+            pos = nextPos
+            val fn = (tag ushr 3).toInt()
+            val wt = (tag and 7L).toInt()
+            if (fn <= 0) break
+            when (wt) {
+                0 -> {
+                    val (v, p2) = readVarint(buf, pos, end)
+                    onField(fn, wt, pos, p2, v)
+                    pos = p2
+                }
+                1 -> {
+                    if (pos + 8 > end) return
+                    pos += 8
+                }
+                2 -> {
+                    val (len, p2) = readVarint(buf, pos, end)
+                    val l = len.toInt()
+                    if (l < 0 || p2 + l > end) return
+                    onField(fn, wt, p2, p2 + l, 0L)
+                    pos = p2 + l
+                }
+                5 -> {
+                    if (pos + 4 > end) return
+                    pos += 4
+                }
+                else -> return
+            }
+        }
+    }
+
+    private fun readVarint(buf: ByteArray, start: Int, end: Int): Pair<Long, Int> {
+        var pos = start
+        var res = 0L
+        var shift = 0
+        while (pos < end && shift < 64) {
+            val b = buf[pos++].toInt() and 0xFF
+            res = res or ((b and 0x7F).toLong() shl shift)
+            if ((b and 0x80) == 0) return res to pos
+            shift += 7
+        }
+        return res to pos
+    }
 
     override suspend fun getFilterLadders(): List<FilterLadder> = withContext(Dispatchers.IO) {
         if (cachedLadders.isNotEmpty()) return@withContext cachedLadders
