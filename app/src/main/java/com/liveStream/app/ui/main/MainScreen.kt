@@ -557,9 +557,6 @@ private fun DiscoverPage(
                 if (shouldLoadMore) onIntent(MainIntent.LoadNextPage)
             }
 
-            val featured = if (state.searchQuery.isBlank() && state.items.size > 3) state.items.firstOrNull() else null
-            val gridItems = if (featured != null) state.items.drop(1) else state.items
-
             LazyVerticalGrid(
                 state = gridState,
                 columns = GridCells.Adaptive(minSize = 112.dp),
@@ -568,16 +565,7 @@ private fun DiscoverPage(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                if (featured != null) {
-                    item(key = "mobile_featured_${featured.mediaId}", span = { GridItemSpan(maxLineSpan) }) {
-                        MobileFeaturedBanner(
-                            item = featured,
-                            providerName = activeProvider?.displayName.orEmpty(),
-                            onClick = { onOpenPlayer(featured) }
-                        )
-                    }
-                }
-                items(gridItems, key = { "${it.providerId}:${it.mediaId}" }) { item ->
+                items(state.items, key = { "${it.providerId}:${it.mediaId}" }) { item ->
                     PosterCard(item = item, onClick = { onOpenPlayer(item) })
                 }
                 if (state.isLoadingMore) {
@@ -605,37 +593,7 @@ private fun MobileDiscoverSkeleton(modifier: Modifier = Modifier) {
         contentPadding = PaddingValues(bottom = 16.dp),
         modifier = modifier
     ) {
-        item(span = { GridItemSpan(3) }) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(152.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(SurfaceCard)
-                    .border(1.dp, BorderSubtle, RoundedCornerShape(14.dp))
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .width(92.dp)
-                        .height(128.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(shimmer)
-                )
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Box(Modifier.width(72.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(shimmer))
-                    Spacer(Modifier.height(8.dp))
-                    Box(Modifier.fillMaxWidth(0.9f).height(18.dp).clip(RoundedCornerShape(6.dp)).background(shimmer))
-                    Spacer(Modifier.height(8.dp))
-                    Box(Modifier.fillMaxWidth(0.7f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmer))
-                    Spacer(Modifier.height(14.dp))
-                    Box(Modifier.width(104.dp).height(32.dp).clip(RoundedCornerShape(16.dp)).background(shimmer))
-                }
-            }
-        }
-        items(9) {
+        items(12) {
             Column {
                 Box(
                     modifier = Modifier
@@ -648,101 +606,6 @@ private fun MobileDiscoverSkeleton(modifier: Modifier = Modifier) {
                 Box(Modifier.fillMaxWidth(0.85f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmer))
                 Spacer(Modifier.height(4.dp))
                 Box(Modifier.fillMaxWidth(0.5f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(shimmer))
-            }
-        }
-    }
-}
-
-@Composable
-private fun MobileFeaturedBanner(
-    item: MediaItem,
-    providerName: String,
-    onClick: () -> Unit
-) {
-    val shimmer = tvShimmerBrush()
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(
-                Brush.horizontalGradient(listOf(SurfaceElevated, SurfaceCard))
-            )
-            .border(1.dp, BorderSubtle, RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-            .padding(12.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .width(92.dp)
-                .aspectRatio(3f / 4f)
-                .clip(RoundedCornerShape(10.dp))
-                .background(SurfaceCard)
-        ) {
-            SubcomposeAsyncImage(
-                model = item.coverUrl,
-                contentDescription = item.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            ) {
-                when (painter.state) {
-                    is AsyncImagePainter.State.Success -> SubcomposeAsyncImageContent()
-                    else -> Box(Modifier.fillMaxSize().background(shimmer))
-                }
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (providerName.isNotBlank()) {
-                    Text(
-                        text = providerName,
-                        color = Color.White,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(AccentRed)
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-                if (item.totalEpisodes > 0) {
-                    Text("${item.totalEpisodes} Ep", color = AccentGold, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = item.title,
-                color = TextPrimary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (item.description.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = item.description,
-                    color = TextSecondary,
-                    fontSize = 11.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(AccentRed)
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Tonton Sekarang", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -1142,7 +1005,7 @@ private fun ForYouPagerPage(
                     Column(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
-                            .padding(start = 16.dp, end = 84.dp, bottom = 24.dp)
+                            .padding(start = 16.dp, end = 84.dp, bottom = 44.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -1205,61 +1068,7 @@ private fun ForYouPagerPage(
                                 fontSize = 11.sp
                             )
                         }
-                        Spacer(Modifier.height(8.dp))
-                        // Garis detik + kecepatan video cuplikan
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = formatDurationMs(currentPosMs),
-                                color = TextPrimary,
-                                fontSize = 11.sp
-                            )
-                            Slider(
-                                value = if (durationMs > 0L) (currentPosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f,
-                                onValueChange = { frac ->
-                                    if (durationMs > 0L) {
-                                        val target = (frac * durationMs).toLong()
-                                        currentPosMs = target
-                                        exoPlayer.seekTo(target)
-                                    }
-                                },
-                                colors = SliderDefaults.colors(
-                                    thumbColor = AccentRed,
-                                    activeTrackColor = AccentRed,
-                                    inactiveTrackColor = Color(0x55FFFFFF)
-                                ),
-                                modifier = Modifier.weight(1f).padding(horizontal = 6.dp)
-                            )
-                            Text(
-                                text = formatDurationMs(durationMs),
-                                color = TextSecondary,
-                                fontSize = 11.sp
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "${playbackSpeed}x",
-                                color = AccentGold,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color(0x88000000))
-                                    .clickable {
-                                        val nextSpeed = when (playbackSpeed) {
-                                            1.0f -> 1.25f
-                                            1.25f -> 1.5f
-                                            1.5f -> 2.0f
-                                            else -> 1.0f
-                                        }
-                                        playbackSpeed = nextSpeed
-                                        exoPlayer.setPlaybackSpeed(nextSpeed)
-                                    }
-                                    .padding(horizontal = 7.dp, vertical = 3.dp)
-                            )
-                        }
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(10.dp))
                         Button(
                             onClick = {
                                 val resumeMs = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -1280,7 +1089,7 @@ private fun ForYouPagerPage(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(end = 14.dp, bottom = 36.dp)
+                            .padding(end = 14.dp, bottom = 48.dp)
                     ) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1334,6 +1143,45 @@ private fun ForYouPagerPage(
                                 fontSize = 11.sp
                             )
                         }
+                    }
+
+                    // Garis menit pemutar tepat di perbatasan navbar bawah
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = formatDurationMs(currentPosMs),
+                            color = TextPrimary,
+                            fontSize = 11.sp
+                        )
+                        Slider(
+                            value = if (durationMs > 0L) (currentPosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f,
+                            onValueChange = { frac ->
+                                if (durationMs > 0L) {
+                                    val target = (frac * durationMs).toLong()
+                                    currentPosMs = target
+                                    exoPlayer.seekTo(target)
+                                }
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = AccentRed,
+                                activeTrackColor = AccentRed,
+                                inactiveTrackColor = Color(0x55FFFFFF)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(28.dp)
+                                .padding(horizontal = 6.dp)
+                        )
+                        Text(
+                            text = formatDurationMs(durationMs),
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }

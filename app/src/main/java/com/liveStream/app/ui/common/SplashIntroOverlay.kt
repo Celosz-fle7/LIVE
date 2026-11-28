@@ -1,5 +1,6 @@
 package com.liveStream.app.ui.common
 
+import android.content.res.Configuration
 import android.net.Uri
 import android.view.KeyEvent
 import android.view.LayoutInflater
@@ -10,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -23,8 +25,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -34,12 +38,14 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.liveStream.app.R
+import com.liveStream.app.core.TvDeviceHelper
 import com.liveStream.app.ui.theme.BgDark
 import kotlinx.coroutines.delay
 
 /**
  * Animasi splash screen pembuka (video + suara sonic logo) saat masuk aplikasi.
  * Berjalan paralel sementara MainViewModel memuat katalog di background.
+ * Otomatis memakai versi vertikal (9:16) di Mobile portrait dan landscape di TV.
  * Bisa dilewati kapan saja dengan tap layar (Mobile) atau OK/Back (Remote TV).
  */
 @OptIn(UnstableApi::class)
@@ -48,6 +54,11 @@ fun SplashIntroOverlay(
     onFinished: () -> Unit
 ) {
     val context = LocalContext.current
+    val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+    val useVerticalSplash = remember(isPortrait) {
+        !TvDeviceHelper.isTvDevice(context) && isPortrait
+    }
+    val rawResId = if (useVerticalSplash) R.raw.splash_intro_mobile else R.raw.splash_intro
     val focusRequester = remember { FocusRequester() }
     var firstFrameReady by remember { mutableStateOf(false) }
     var done by remember { mutableStateOf(false) }
@@ -59,10 +70,10 @@ fun SplashIntroOverlay(
         }
     }
 
-    val exoPlayer = remember {
+    val exoPlayer = remember(rawResId) {
         ExoPlayer.Builder(context).build().apply {
             repeatMode = Player.REPEAT_MODE_OFF
-            val uri = Uri.parse("android.resource://${context.packageName}/${R.raw.splash_intro}")
+            val uri = Uri.parse("android.resource://${context.packageName}/$rawResId")
             setMediaItem(MediaItem.fromUri(uri))
             prepare()
             playWhenReady = true
@@ -127,8 +138,19 @@ fun SplashIntroOverlay(
             factory = { ctx ->
                 (LayoutInflater.from(ctx).inflate(R.layout.view_texture_player, null) as PlayerView).apply {
                     useController = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    resizeMode = if (useVerticalSplash) {
+                        AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    } else {
+                        AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    }
                     player = exoPlayer
+                }
+            },
+            update = { pv ->
+                pv.resizeMode = if (useVerticalSplash) {
+                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                } else {
+                    AspectRatioFrameLayout.RESIZE_MODE_FIT
                 }
             },
             modifier = Modifier.fillMaxSize()
@@ -140,7 +162,11 @@ fun SplashIntroOverlay(
                 painter = painterResource(id = R.drawable.tv_banner),
                 contentDescription = "LIVE",
                 contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
+                modifier = if (useVerticalSplash) {
+                    Modifier.fillMaxSize().padding(horizontal = 24.dp)
+                } else {
+                    Modifier.fillMaxSize()
+                }
             )
         }
     }
