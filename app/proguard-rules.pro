@@ -1,2 +1,5 @@
 -keep class com.liveStream.app.core.NativeCore { *; }
 -keep class com.liveStream.contract.** { *; }
+-keep class androidx.media3.ui.PlayerView { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**

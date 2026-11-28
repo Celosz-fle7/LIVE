@@ -33,8 +33,13 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi
 
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core-rust
+
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+        uses: taiki-e/install-action@cargo-ndk
 
       - name: Build Rust Native Core (.so)
         working-directory: core-rust
@@ -45,17 +50,17 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build Debug APK
+      - name: Build Release APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Prepare Release Artifacts
         env:
           RELEASE_PAT: ${{ secrets.LIVE || secrets.RELEASE_PAT }}
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/*.apk dist/LIVE-app.apk
+          cp app/build/outputs/apk/release/*.apk dist/LIVE-app.apk
           VERSION_NAME=$(grep 'versionName = ' app/build.gradle.kts | head -1 | awk -F '"' '{print $2}')
           VERSION_CODE=$(grep 'versionCode = ' app/build.gradle.kts | head -1 | awk -F '= ' '{print $2}' | tr -d '[:space:]')
           echo "APP_TAG=v$VERSION_NAME" >> $GITHUB_ENV
